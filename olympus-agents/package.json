@@ -1,0 +1,25 @@
+{
+  "name": "@olympus/acp-server",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Agent Client Protocol server that exposes Olympus's role agents to Zed (and any future ACP-compatible editor).",
+  "bin": {
+    "olympus-acp-server": "./bin/olympus-acp-server.cjs"
+  },
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -w -p tsconfig.json",
+    "start": "node ./dist/main.js"
+  },
+  "dependencies": {
+    "nanoid": "^5.0.9"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "^5.7.3",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.1.4"
+  }
+}
