@@ -28,6 +28,7 @@ type RunAgentOptions = {
   role: RoleKey;
   userPrompt: string;
   threadId?: string;
+  phase?: string;
   includeSpec?: boolean;
   includeArchitecture?: boolean;
   contextExtra?: string;
@@ -80,7 +81,7 @@ export async function runAgentTurn(options: RunAgentOptions): Promise<AgentTurnR
     text: '',
     blocks: [],
     createdAt: now,
-    phase: state.phase,
+    phase: options.phase ?? state.phase,
     meta: {
       model: `${initialResolved.provider}:${initialResolved.model}`,
       tier: initialResolved.tier,

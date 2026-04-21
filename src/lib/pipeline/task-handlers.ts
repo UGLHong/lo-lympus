@@ -251,6 +251,7 @@ async function handlePhaseReview(ctx: HandlerContext): Promise<TaskHandlerOutcom
     projectId: task.projectId,
     role: 'reviewer',
     userPrompt: reviewPrompt,
+    phase: targetPhase,
     includeSpec: targetPhase !== 'CLARIFY',
     includeArchitecture: targetPhase === 'PLAN',
     contextExtra: artifactsContext,
