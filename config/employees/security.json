@@ -1,0 +1,7 @@
+{
+  "role": "security",
+  "enabled": true,
+  "pollMs": 5000,
+  "concurrency": 1,
+  "accepts": ["security-review"]
+}

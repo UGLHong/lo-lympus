@@ -1,0 +1,8 @@
+{
+  "role": "reviewer",
+  "enabled": true,
+  "pollMs": 5000,
+  "concurrency": 2,
+  "accepts": ["phase-review", "ticket-review"],
+  "note": "Reviewers fan out across parallel tickets."
+}

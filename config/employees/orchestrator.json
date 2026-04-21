@@ -1,0 +1,8 @@
+{
+  "role": "orchestrator",
+  "enabled": true,
+  "pollMs": 5000,
+  "concurrency": 1,
+  "accepts": ["orchestrator-intake", "orchestrator-clarify"],
+  "note": "Single intake lane; humans expect serialized conversation here."
+}
