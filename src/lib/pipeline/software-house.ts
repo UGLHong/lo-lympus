@@ -43,15 +43,10 @@ import {
   isDevRole,
   type ImplementSummary,
 } from './implement';
+import { resolveAllEmployeeConfigs, resolveEmployeeConfig } from '@/lib/employees/config';
 
-const DEFAULT_WORKER_POLL_MS = 400;
 const DEFAULT_SUPERVISOR_TICK_MS = 1_000;
 const DEFAULT_IDLE_BUFFER_MS = 15_000;
-
-function getWorkerPollMs(): number {
-  const raw = Number(process.env.OLYMPUS_WORKER_POLL_MS);
-  return Number.isFinite(raw) && raw > 0 ? Math.max(50, raw) : DEFAULT_WORKER_POLL_MS;
-}
 
 function getSupervisorTickMs(): number {
   const raw = Number(process.env.OLYMPUS_SUPERVISOR_TICK_MS);
@@ -70,6 +65,9 @@ type Worker = {
   role: RoleKey;
   state: WorkerState;
   currentTaskId: string | null;
+  currentTaskSlug: string | null;
+  pollMs: number;
+  acceptedKinds: readonly TaskKind[] | null;
   loop: Promise<void>;
 };
 
@@ -203,16 +201,23 @@ function spawnSoftwareHouse(projectId: string): SoftwareHouse {
   // same turn after every restart and churn through tokens.
   void hydratePrimedFromDisk(house);
 
-  for (const role of ROLE_KEYS) {
-    const worker: Worker = {
-      id: `${role}-${nanoid(6)}`,
-      role,
-      state: 'idle',
-      currentTaskId: null,
-      loop: Promise.resolve(),
-    };
-    worker.loop = runWorkerLoop(house, worker);
-    workers.set(worker.id, worker);
+  const employees = resolveAllEmployeeConfigs();
+  for (const employee of employees) {
+    if (!employee.enabled) continue;
+    for (let index = 0; index < employee.concurrency; index += 1) {
+      const worker: Worker = {
+        id: `${employee.role}-${index + 1}-${nanoid(6)}`,
+        role: employee.role,
+        state: 'idle',
+        currentTaskId: null,
+        currentTaskSlug: null,
+        pollMs: employee.pollMs,
+        acceptedKinds: employee.accepts,
+        loop: Promise.resolve(),
+      };
+      worker.loop = runWorkerLoop(house, worker);
+      workers.set(worker.id, worker);
+    }
   }
 
   house.supervisorLoop = runSupervisorLoop(house);
@@ -236,26 +241,42 @@ async function hydratePrimedFromDisk(house: SoftwareHouse): Promise<void> {
 }
 
 async function runWorkerLoop(house: SoftwareHouse, worker: Worker): Promise<void> {
-  const pollMs = getWorkerPollMs();
-
   while (!house.stopRequested) {
+    // reload the employee config each tick so per-role pollMs / accepts
+    // changes picked up without restarting the house.
+    const live = resolveEmployeeConfig(worker.role);
+    if (!live.enabled) {
+      worker.state = 'idle';
+      await sleep(live.pollMs);
+      continue;
+    }
+    worker.pollMs = live.pollMs;
+    worker.acceptedKinds = live.accepts;
+
     const paused = await isProjectPaused(house.projectId);
     if (paused) {
       worker.state = 'idle';
-      await sleep(pollMs);
+      await sleep(worker.pollMs);
       continue;
     }
 
-    const task = claimNextForRole(house.projectId, worker.role, worker.id);
+    const task = claimNextForRole(
+      house.projectId,
+      worker.role,
+      worker.id,
+      worker.acceptedKinds,
+    );
     if (!task) {
       worker.state = 'idle';
       worker.currentTaskId = null;
-      await sleep(pollMs);
+      worker.currentTaskSlug = null;
+      await sleep(worker.pollMs);
       continue;
     }
 
     worker.state = 'working';
     worker.currentTaskId = task.id;
+    worker.currentTaskSlug = task.slug;
 
     try {
       const outcome = await runTaskHandler(task);
@@ -287,6 +308,7 @@ async function runWorkerLoop(house: SoftwareHouse, worker: Worker): Promise<void
     } finally {
       worker.state = 'idle';
       worker.currentTaskId = null;
+      worker.currentTaskSlug = null;
     }
   }
 
@@ -880,10 +902,19 @@ async function isStillInPhase(projectId: string, phase: Phase): Promise<boolean>
   return state?.phase === phase;
 }
 
+type WorkerSnapshot = {
+  id: string;
+  role: RoleKey;
+  state: WorkerState;
+  currentTaskId: string | null;
+  currentTaskSlug: string | null;
+  pollMs: number;
+};
+
 // debug helper — lets routes/UI introspect what the house is doing right now.
 export function snapshotSoftwareHouse(projectId: string): {
   running: boolean;
-  workers: { id: string; role: RoleKey; state: WorkerState; currentTaskId: string | null }[];
+  workers: WorkerSnapshot[];
   backlog: BacklogTask[];
   awaitingHumanForPhase: Phase | null;
   phaseIdleSinceMs: number | null;
@@ -906,6 +937,8 @@ export function snapshotSoftwareHouse(projectId: string): {
       role: worker.role,
       state: worker.state,
       currentTaskId: worker.currentTaskId,
+      currentTaskSlug: worker.currentTaskSlug,
+      pollMs: worker.pollMs,
     })),
     backlog: listBacklog(projectId),
     awaitingHumanForPhase: house.awaitingHumanForPhase,
