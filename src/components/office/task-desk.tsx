@@ -200,6 +200,7 @@ export function useWorkerTaskMap(projectId: string): Map<RoleKey, TaskEntry> {
     if (!snapshot) return map;
     for (const worker of snapshot.workers) {
       if (!worker.currentTaskId) continue;
+      if (map.has(worker.role)) continue;
       const task = snapshot.tasks.find((entry) => entry.id === worker.currentTaskId);
       if (task) map.set(worker.role, task);
     }
