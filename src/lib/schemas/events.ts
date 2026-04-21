@@ -184,6 +184,45 @@ export const eventSchema = z.discriminatedUnion('kind', [
     kind: z.literal('workspace.fs.changed'),
     path: z.string(),
   }),
+  baseEvent.extend({
+    kind: z.literal('task.created'),
+    taskId: z.string(),
+    taskSlug: z.string(),
+    taskKind: z.string(),
+    role: z.enum(ROLE_KEYS),
+    phase: z.enum(PIPELINE_PHASES),
+    title: z.string(),
+    summary: z.string().optional(),
+  }),
+  baseEvent.extend({
+    kind: z.literal('task.claimed'),
+    taskId: z.string(),
+    taskSlug: z.string(),
+    workerId: z.string(),
+    role: z.enum(ROLE_KEYS),
+  }),
+  baseEvent.extend({
+    kind: z.literal('task.completed'),
+    taskId: z.string(),
+    taskSlug: z.string(),
+  }),
+  baseEvent.extend({
+    kind: z.literal('task.failed'),
+    taskId: z.string(),
+    taskSlug: z.string(),
+    reason: z.string().optional(),
+  }),
+  baseEvent.extend({
+    kind: z.literal('task.paused'),
+    taskId: z.string(),
+    taskSlug: z.string(),
+    reason: z.string().optional(),
+  }),
+  baseEvent.extend({
+    kind: z.literal('task.dropped'),
+    taskId: z.string(),
+    taskSlug: z.string(),
+  }),
 ]);
 
 export type OlympusEvent = z.infer<typeof eventSchema>;
