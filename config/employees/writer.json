@@ -1,7 +1,0 @@
-{
-  "role": "writer",
-  "enabled": true,
-  "pollMs": 5000,
-  "concurrency": 1,
-  "accepts": ["writer-demo"]
-}

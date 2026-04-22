@@ -1,0 +1,14 @@
+{
+  "maxRetries": 3,
+  "maxReviewIterations": 3,
+  "pollMs": 5000,
+  "clarificationTimeoutMs": 900000,
+  "clarificationTokenBudgetMs": 2700000,
+  "clarificationWatcherTickMs": 30000,
+  "modelTiers": {
+    "fast": "google/gemma-4-26b-a4b-it:free",
+    "reasoning": "openai/gpt-oss-20b:free",
+    "coding": "google/gemini-2.5-flash-lite",
+    "vision": "openai/gpt-oss-120b:free"
+  }
+}

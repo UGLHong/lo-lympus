@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg text-text font-mono antialiased;
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    @apply bg-border rounded;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    @apply bg-border-strong;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-bg-raised border border-border rounded-md overflow-hidden;
+  }
+
+  .panel-header {
+    @apply px-3 py-2 text-xs uppercase tracking-wider text-text-muted border-b border-border flex items-center justify-between;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-border hover:border-border-strong hover:bg-bg-raised transition-colors;
+  }
+
+  .btn-primary {
+    @apply border-accent text-accent hover:bg-accent-soft;
+  }
+
+  .btn-danger {
+    @apply border-red-500/40 text-red-400 hover:bg-red-950/50 hover:border-red-500/60;
+  }
+}
+
+@layer utilities {
+  @keyframes olympus-attention-glow {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.55), 0 0 0 0 rgba(250, 204, 21, 0.25);
+      border-color: rgba(250, 204, 21, 0.75);
+    }
+    50% {
+      box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.35), 0 0 18px 4px rgba(250, 204, 21, 0.35);
+      border-color: rgba(253, 224, 71, 1);
+    }
+  }
+
+  .attention-glow {
+    animation: olympus-attention-glow 1.6s ease-in-out infinite;
+  }
+}

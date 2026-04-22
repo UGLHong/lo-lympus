@@ -29,7 +29,7 @@ async function getTableColumns(tableName: string): Promise<ColumnInfo[]> {
       ORDER BY ordinal_position
     `)
   );
-  return result as ColumnInfo[];
+  return result as unknown as ColumnInfo[];
 }
 
 async function main() {

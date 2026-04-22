@@ -1,6 +1,0 @@
-{
-  "$schema": "./manifest.schema.json",
-  "version": 1,
-  "description": "Lists role avatar .lottie bundles that ship with the app. Add a role key once its <role>.lottie asset lives beside this file.",
-  "roles": []
-}

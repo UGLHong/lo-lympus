@@ -1,8 +1,0 @@
-{
-  "role": "frontend-dev",
-  "enabled": true,
-  "pollMs": 5000,
-  "concurrency": 2,
-  "accepts": ["ticket-dev", "incident-heal"],
-  "note": "Two parallel frontend devs so independent tickets fan out."
-}
