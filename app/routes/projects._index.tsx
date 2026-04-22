@@ -4,7 +4,7 @@ import { DeleteProjectForm } from '../components/delete-project-form';
 import { RecreateProjectForm } from '../components/recreate-project-form';
 import { createProject, createTask, listProjects } from '../../server/db/queries';
 import { slugify } from '../lib/slug';
-import { projectWorkspace } from '../../server/workspace/paths';
+import { projectWorkspace, writeProjectMetadata } from '../../server/workspace/paths';
 import { nanoid } from 'nanoid';
 
 import type { Route } from './+types/projects._index';
@@ -29,12 +29,20 @@ export async function action({ request }: Route.ActionArgs) {
     brief,
     workspaceDir: dir,
   });
-  
+
+  writeProjectMetadata(slug, {
+    projectId: project.id,
+    slug: project.slug,
+    name: project.name,
+    brief: project.brief,
+    createdAt: project.createdAt?.toISOString?.() ?? new Date().toISOString(),
+  });
+
   await createTask({
     projectId: project.id,
-    role: 'orchestrator',
-    title: 'Orchestrate project development',
-    description: `Decompose the project brief into concrete, role-scoped tasks for the team. Here is the project brief:\n\n${brief}\n\nYou should create tasks for the appropriate team members to complete the project.`,
+    role: 'pm',
+    title: 'Kick off project: requirements and initial plan',
+    description: `Write .software-house/REQUIREMENTS.md for this brief, then hand off to the architect via create_task so the architecture / planning / implementation chain can kick off. Do not file any other tickets — the architect → techlead chain fans out from here.\n\nProject brief:\n\n${brief}\n\nTESTING: required`,
   });
   
   return redirect(`/projects/${project.id}`);

@@ -1479,7 +1479,7 @@ const FAILED_TASK_ACTIONS: FailedTaskActionDescriptor[] = [
   {
     id: 'regenerate',
     label: 'Regenerate',
-    caption: 'Send the ticket back to the Orchestrator to re-plan using the failure history.',
+    caption: 'Send the ticket back to the PM to re-plan using the failure history.',
     tone: 'neutral',
   },
   {

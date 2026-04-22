@@ -17,6 +17,8 @@ export interface OlympusSettings {
     reasoning: string;
     coding: string;
     vision: string;
+    complex: string;
+    planning: string;
   };
 }
 
@@ -39,6 +41,8 @@ const DEFAULTS: OlympusSettings = {
     reasoning: process.env.MODEL_TIER_REASONING ?? '',
     coding: process.env.MODEL_TIER_CODING ?? '',
     vision: process.env.MODEL_TIER_VISION ?? '',
+    complex: process.env.MODEL_TIER_COMPLEX ?? '',
+    planning: process.env.MODEL_TIER_PLANNING ?? '',
   },
 };
 
@@ -82,6 +86,8 @@ function mergeWithDefaults(partial: Partial<OlympusSettings>): OlympusSettings {
       reasoning: partial.modelTiers?.reasoning || DEFAULTS.modelTiers.reasoning,
       coding: partial.modelTiers?.coding || DEFAULTS.modelTiers.coding,
       vision: partial.modelTiers?.vision || DEFAULTS.modelTiers.vision,
+      complex: partial.modelTiers?.complex || DEFAULTS.modelTiers.complex,
+      planning: partial.modelTiers?.planning || DEFAULTS.modelTiers.planning,
     },
   };
 }

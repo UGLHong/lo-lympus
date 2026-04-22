@@ -45,10 +45,22 @@ export function buildPlaywrightBrowserTool(ctx: ToolCtx) {
     description:
       'Drive a headful Chromium browser for QA. Supports navigate, click, fill, screenshot, and incident reporting.',
     inputSchema: z.object({
-      action: z.enum(['goto', 'click', 'fill', 'screenshot', 'text', 'report_incident']),
+      action: z.enum([
+        'goto',
+        'click',
+        'fill',
+        'select',
+        'screenshot',
+        'text',
+        'get_url',
+        'wait_for_selector',
+        'report_incident',
+      ]),
       url: z.string().optional(),
       selector: z.string().optional(),
       value: z.string().optional(),
+      /** timeout in ms for wait_for_selector (default 5000) */
+      timeout: z.number().optional(),
       title: z.string().optional(),
       description: z.string().optional(),
     }),
@@ -70,7 +82,7 @@ export function buildPlaywrightBrowserTool(ctx: ToolCtx) {
           if (!input.title) return { ok: false, error: 'title required' };
           const task = await createTask({
             projectId: ctx.projectId,
-            role: 'incident',
+            role: 'cto',
             title: input.title,
             description: input.description ?? '',
             status: 'todo',
@@ -101,10 +113,24 @@ export function buildPlaywrightBrowserTool(ctx: ToolCtx) {
           await page.fill(input.selector, input.value ?? '');
           return { ok: true };
         }
+        if (input.action === 'select') {
+          if (!input.selector) return { ok: false, error: 'selector required' };
+          if (!input.value) return { ok: false, error: 'value required' };
+          await page.selectOption(input.selector, input.value);
+          return { ok: true };
+        }
         if (input.action === 'text') {
           if (!input.selector) return { ok: false, error: 'selector required' };
           const text = await page.locator(input.selector).first().innerText();
           return { ok: true, data: text };
+        }
+        if (input.action === 'get_url') {
+          return { ok: true, data: { url: page.url() } };
+        }
+        if (input.action === 'wait_for_selector') {
+          if (!input.selector) return { ok: false, error: 'selector required' };
+          await page.waitForSelector(input.selector, { timeout: input.timeout ?? 5000 });
+          return { ok: true };
         }
 
         const dir = resolve(projectWorkspace(ctx.projectSlug), '.software-house/screenshots');

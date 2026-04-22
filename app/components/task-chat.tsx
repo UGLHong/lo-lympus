@@ -5,8 +5,10 @@ import {
   Database,
   FileCode2,
   Globe,
+  HelpCircle,
   MessageSquareText,
   PlayCircle,
+  ShieldCheck,
   Sparkles,
   Terminal as TerminalIcon,
   WifiOff,
@@ -407,6 +409,28 @@ function ChatBubble({
     );
   }
 
+  if (item.messageType === 'cto-resolution') {
+    return (
+      <CtoResolutionBubble
+        item={item}
+        color={color}
+        label={label ?? 'cto'}
+        highlightRef={highlightRef}
+      />
+    );
+  }
+
+  if (item.messageType === 'hitl-question') {
+    return (
+      <HitlForwardedBubble
+        item={item}
+        color={color}
+        label={label ?? 'agent'}
+        highlightRef={highlightRef}
+      />
+    );
+  }
+
   const isInactiveQuestion = item.direction === 'to-human';
 
   return (
@@ -431,6 +455,129 @@ function ChatBubble({
           <pre className="mt-1 text-[10px] text-text-faint whitespace-pre-wrap font-mono bg-bg/40 border border-border/60 rounded p-1">
             {item.context}
           </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CtoResolutionBubble({
+  item,
+  color,
+  label,
+  highlightRef,
+}: {
+  item: ChatItem;
+  color: string;
+  label: string;
+  highlightRef?: React.RefObject<HTMLDivElement | null>;
+}) {
+  const answer = item.answer ?? item.text;
+  const rationale = item.rationale ?? '';
+  const originalQuestion = item.originalQuestion ?? '';
+
+  return (
+    <div ref={highlightRef} className="flex justify-start">
+      <div className="w-full max-w-[95%] rounded-lg border border-emerald-400/40 bg-emerald-500/5 overflow-hidden">
+        <div className="flex items-center gap-1.5 text-[10px] px-3 pt-2.5 pb-2 border-b border-emerald-400/20">
+          <ShieldCheck size={11} className="text-emerald-300" />
+          <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <span className="text-text">{label}</span>
+          <span className="ml-1 uppercase tracking-wider text-[9px] text-emerald-300">
+            resolved on behalf of human
+          </span>
+        </div>
+        {originalQuestion && (
+          <div className="px-3 pt-2 pb-1.5 text-[11px] border-b border-emerald-400/10">
+            <div className="uppercase tracking-wider text-[9px] text-text-faint mb-1">
+              Original question
+            </div>
+            <pre className="whitespace-pre-wrap font-mono text-text-muted bg-bg/40 border border-border/40 rounded p-1.5 text-[10px]">
+              {originalQuestion}
+            </pre>
+          </div>
+        )}
+        <div className="px-3 pt-2 pb-2 text-xs">
+          <div className="uppercase tracking-wider text-[9px] text-emerald-300/90 mb-1">
+            CTO answer
+          </div>
+          <div className="whitespace-pre-wrap break-words text-text">{answer}</div>
+        </div>
+        {rationale && (
+          <div className="px-3 pb-2.5 text-[11px]">
+            <div className="uppercase tracking-wider text-[9px] text-text-faint mb-1">
+              Rationale
+            </div>
+            <div className="whitespace-pre-wrap break-words text-text-muted italic">{rationale}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HitlForwardedBubble({
+  item,
+  color,
+  label,
+  highlightRef,
+}: {
+  item: ChatItem;
+  color: string;
+  label: string;
+  highlightRef?: React.RefObject<HTMLDivElement | null>;
+}) {
+  const hasClarifications = !!item.clarifications && item.clarifications.length > 0;
+  const headline = item.text.split('\n')[0];
+
+  return (
+    <div ref={highlightRef} className="flex justify-start">
+      <div className="w-full max-w-[95%] rounded-lg border border-sky-400/30 bg-sky-500/5 overflow-hidden">
+        <div className="flex items-center gap-1.5 text-[10px] px-3 pt-2.5 pb-2 border-b border-sky-400/20">
+          <HelpCircle size={11} className="text-sky-300" />
+          <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <span className="text-text">{label}</span>
+          <span className="ml-1 uppercase tracking-wider text-[9px] text-sky-300">
+            sent to cto
+          </span>
+        </div>
+        <div className="px-3 pt-2 pb-1.5 text-xs text-text">{headline}</div>
+        {hasClarifications ? (
+          <div className="px-3 pb-2 space-y-1.5">
+            {item.clarifications!.map((c, index) => (
+              <div key={index} className="rounded border border-sky-400/15 bg-bg/30 p-2">
+                <div className="text-[11px] text-text">
+                  <span className="font-mono text-sky-300/70 text-[10px] mr-1.5">
+                    Q{index + 1}.
+                  </span>
+                  {c.question}
+                </div>
+                {c.options.length > 0 && (
+                  <div className="mt-1 text-[10px] text-text-muted">
+                    options: {c.options.join(' · ')}
+                  </div>
+                )}
+                {c.fallbackAssumption && (
+                  <div className="mt-1 text-[10px] text-text-faint italic">
+                    fallback: {c.fallbackAssumption}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          item.options && item.options.length > 0 ? (
+            <div className="px-3 pb-2 text-[10px] text-text-muted">
+              options: {item.options.join(' · ')}
+            </div>
+          ) : null
+        )}
+        {item.context && (
+          <div className="px-3 pb-2.5">
+            <pre className="text-[10px] text-text-faint whitespace-pre-wrap font-mono bg-bg/40 border border-border/60 rounded p-1.5">
+              {item.context}
+            </pre>
+          </div>
         )}
       </div>
     </div>

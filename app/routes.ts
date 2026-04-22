@@ -15,6 +15,7 @@ export default [
   route('api/tasks/:taskId/action', 'routes/api.task-action.ts'),
   route('api/tasks/:taskId/activity', 'routes/api.task-activity.ts'),
   route('api/projects', 'routes/api.projects.ts'),
+  route('api/projects/:id/action', 'routes/api.project-action.ts'),
   route('api/agents', 'routes/api.agents.ts'),
   route('api/settings', 'routes/api.settings.ts'),
   route('api/workspace/*', 'routes/api.workspace.ts'),

@@ -77,6 +77,60 @@ export async function listChildTasks(parentTaskId: string): Promise<Task[]> {
     .orderBy(asc(tasks.createdAt));
 }
 
+// find an open CTO triage task that was spawned for the given original task.
+// used to dedupe: if the same asker fires `ask_clarifying_questions` or
+// `request_human_input` again while a triage is already queued / in-flight,
+// we append the new questions to the existing triage instead of spawning a
+// second one.
+export async function findOpenCtoTriageForParent(
+  parentTaskId: string,
+): Promise<Task | undefined> {
+  const rows = await db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.parentTaskId, parentTaskId),
+        eq(tasks.role, 'cto'),
+        inArray(tasks.status, ['todo', 'in-progress', 'blocked-needs-input']),
+      ),
+    )
+    .orderBy(desc(tasks.createdAt))
+    .limit(1);
+  return rows[0];
+}
+
+export async function findOpenCtoOverseerTask(projectId: string): Promise<Task | undefined> {
+  const rows = await db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.projectId, projectId),
+        eq(tasks.role, 'cto'),
+        inArray(tasks.status, ['todo', 'in-progress', 'blocked-needs-input']),
+        sql`${tasks.title} LIKE 'Overseer request:%'`,
+      ),
+    )
+    .orderBy(desc(tasks.createdAt))
+    .limit(1);
+  return rows[0];
+}
+
+export async function appendToTaskDescription(id: string, extra: string): Promise<Task | undefined> {
+  const existing = await getTaskById(id);
+  if (!existing) return undefined;
+  const nextDescription = existing.description
+    ? `${existing.description}\n\n${extra}`
+    : extra;
+  const [row] = await db
+    .update(tasks)
+    .set({ description: nextDescription, updatedAt: new Date() })
+    .where(eq(tasks.id, id))
+    .returning();
+  return row;
+}
+
 /**
  * Walk the review/fix chain rooted at `taskId`.
  * - ancestors: parent → grandparent → ... (closest first)
@@ -288,7 +342,7 @@ export async function skipTaskSubtree(rootTaskId: string): Promise<Task[]> {
 
 // walk parentTaskId upward to find the top of a review/fix chain. a "root"
 // here is the first task whose own parent is null — typically the original
-// orchestrated ticket that kicked off the review chain.
+// pm-spawned ticket that kicked off the review chain.
 export async function getTaskChainRoot(taskId: string): Promise<Task | undefined> {
   let cursor = await getTaskById(taskId);
   const seen = new Set<string>();

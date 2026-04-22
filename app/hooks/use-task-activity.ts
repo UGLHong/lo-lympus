@@ -23,6 +23,11 @@ export type ActivityItem =
       options?: string[];
       context?: string;
       clarifications?: ClarificationEntry[];
+      messageType?: 'hitl-question' | 'cto-resolution';
+      triageTaskId?: string;
+      answer?: string;
+      rationale?: string;
+      originalQuestion?: string;
     })
   | (BaseItem & {
       kind: 'tool';

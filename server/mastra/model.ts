@@ -2,13 +2,15 @@ import type { OpenAICompatibleConfig } from '@mastra/core/llm';
 
 import { ROLE_TIER, type Role } from '../const/roles';
 
-type Tier = 'FAST' | 'REASONING' | 'CODING' | 'VISION';
+type Tier = 'FAST' | 'REASONING' | 'CODING' | 'VISION' | 'COMPLEX' | 'PLANNING';
 
 const TIER_ENV_VAR: Record<Tier, string> = {
   FAST: 'MODEL_TIER_FAST',
   REASONING: 'MODEL_TIER_REASONING',
   CODING: 'MODEL_TIER_CODING',
   VISION: 'MODEL_TIER_VISION',
+  COMPLEX: 'MODEL_TIER_COMPLEX',
+  PLANNING: 'MODEL_TIER_PLANNING',
 };
 
 export function resolveTierModel(tier: Tier): string {

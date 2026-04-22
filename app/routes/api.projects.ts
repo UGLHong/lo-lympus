@@ -2,7 +2,7 @@ import { nanoid } from 'nanoid';
 import { z } from 'zod';
 
 import { createProject, listProjects } from '../../server/db/queries';
-import { projectWorkspace } from '../../server/workspace/paths';
+import { projectWorkspace, writeProjectMetadata } from '../../server/workspace/paths';
 import { slugify } from '../lib/slug';
 
 import type { Route } from './+types/api.projects';
@@ -29,6 +29,13 @@ export async function action({ request }: Route.ActionArgs) {
     brief: parsed.data.brief,
     slug,
     workspaceDir: dir,
+  });
+  writeProjectMetadata(slug, {
+    projectId: project.id,
+    slug: project.slug,
+    name: project.name,
+    brief: project.brief,
+    createdAt: project.createdAt?.toISOString?.() ?? new Date().toISOString(),
   });
   return Response.json({ project });
 }

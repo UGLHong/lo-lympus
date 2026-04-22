@@ -10,7 +10,7 @@ import {
   createTask,
 } from '../../server/db/queries';
 import { slugify } from '../lib/slug';
-import { projectWorkspace } from '../../server/workspace/paths';
+import { projectWorkspace, writeProjectMetadata } from '../../server/workspace/paths';
 import { nanoid } from 'nanoid';
 
 import type { Route } from './+types/projects.$id';
@@ -48,11 +48,19 @@ export async function action({ request, params }: Route.ActionArgs) {
       workspaceDir: dir,
     });
 
+    writeProjectMetadata(slug, {
+      projectId: newProject.id,
+      slug: newProject.slug,
+      name: newProject.name,
+      brief: newProject.brief,
+      createdAt: newProject.createdAt?.toISOString?.() ?? new Date().toISOString(),
+    });
+
     await createTask({
       projectId: newProject.id,
-      role: 'orchestrator',
-      title: 'Orchestrate project development',
-      description: `Decompose the project brief into concrete, role-scoped tasks for the team. Here is the project brief:\n\n${brief}\n\nYou should create tasks for the appropriate team members to complete the project.`,
+      role: 'pm',
+      title: 'Kick off project: requirements and initial plan',
+      description: `Write .software-house/REQUIREMENTS.md for this brief, then hand off to the architect via create_task so the architecture / planning / implementation chain can kick off. Do not file any other tickets — the architect → techlead chain fans out from here.\n\nProject brief:\n\n${brief}\n\nTESTING: required`,
     });
 
     return redirect(`/projects/${newProject.id}`);

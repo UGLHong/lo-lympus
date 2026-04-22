@@ -1,7 +1,6 @@
 import { isRole, type Role } from './roles';
 
 const ROLE_CODE_PREFIX: Record<Role, string> = {
-  orchestrator: 'ORC',
   pm: 'PM',
   architect: 'ARC',
   techlead: 'TL',
@@ -14,7 +13,7 @@ const ROLE_CODE_PREFIX: Record<Role, string> = {
   security: 'SEC',
   release: 'REL',
   writer: 'DOC',
-  incident: 'INC',
+  cto: 'CTO',
 };
 
 const FALLBACK_PREFIX = 'TASK';

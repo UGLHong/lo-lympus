@@ -6,6 +6,8 @@ import {
   failReviewedChain,
   getProjectById,
   getTaskById,
+  getTaskChainRoot,
+  listChildTasks,
   markTaskDone,
   markTaskFailed,
   markTaskPendingReview,
@@ -18,6 +20,7 @@ import { emitToolLog } from '../lib/tool-log';
 import { createRoleAgent } from '../mastra/agent-factory';
 import { getSettings } from '../lib/settings';
 import { resolveTierModel } from '../mastra/model';
+import { writeProjectMetadata } from '../workspace/paths';
 
 import type { Task } from '../db/schema';
 
@@ -50,7 +53,6 @@ const ARTIFACT_PRODUCING_ROLES: ReadonlySet<Role> = new Set<Role>([
   'release',
   'security',
   'tester',
-  'orchestrator',
 ]);
 
 export async function executeTask(role: Role, task: Task): Promise<void> {
@@ -77,6 +79,21 @@ export async function executeTask(role: Role, task: Task): Promise<void> {
     type: 'state',
     payload: { status: 'working', title: task.title },
   });
+
+  // backfill `.software-house/project.json` for projects created before this
+  // file existed — cheap and idempotent, guarantees agents can always
+  // rediscover the project id from disk if the prompt context is ever lost.
+  try {
+    writeProjectMetadata(project.slug, {
+      projectId: project.id,
+      slug: project.slug,
+      name: project.name,
+      brief: project.brief,
+      createdAt: project.createdAt?.toISOString?.() ?? new Date().toISOString(),
+    });
+  } catch {
+    // non-fatal: the prompt injection already carries the same identifiers.
+  }
 
   const threadId = task.threadId ?? `task-${task.id}`;
   const tierModel = resolveTierModel(ROLE_TIER[role]);
@@ -162,15 +179,6 @@ export async function executeTask(role: Role, task: Task): Promise<void> {
       );
     }
 
-    // guard: orchestrator must emit a JSON task list — if the LLM returned
-    // text but without a parseable JSON array (e.g. truncated stream, partial
-    // rate-limited response), treat it as transient so the poll loop retries.
-    if (role === 'orchestrator' && !hasOrchestrationJson(text)) {
-      throw new EmptyAgentOutputError(
-        `orchestrator produced no parseable task JSON (output length: ${text.length})`,
-      );
-    }
-
     emitToolLog(
       { projectId: task.projectId, role, taskId: task.id },
       {
@@ -186,7 +194,7 @@ export async function executeTask(role: Role, task: Task): Promise<void> {
     attemptCounts.delete(task.id);
 
     // reviewable artifacts park in 'pending-review' until a reviewer approves.
-    // everything else (orchestrator, reviewer, tester, qa) finalizes to 'done' directly.
+    // everything else (reviewer, tester, qa) finalizes to 'done' directly.
     const parksForReview = REVIEWABLE_ROLES.has(role);
     if (parksForReview) {
       await markTaskPendingReview(task.id, resultData);
@@ -194,9 +202,6 @@ export async function executeTask(role: Role, task: Task): Promise<void> {
       await markTaskDone(task.id, resultData);
     }
 
-    if (role === 'orchestrator') {
-      await createSubtasksFromOrchestration(task.projectId, text);
-    }
     if (role === 'tester') {
       await createBugReportTasks(task.projectId, task, text);
     }
@@ -205,6 +210,16 @@ export async function executeTask(role: Role, task: Task): Promise<void> {
     } else if (parksForReview) {
       await scheduleReviewOf(task);
     }
+
+    // safety net for the strict trickle-down chain (cto → pm → architect →
+    // techlead). when pm or architect finishes a mid-stream update (i.e. it
+    // was spawned by an upstream task via create_task, so `parentTaskId` is
+    // set), the agent is supposed to have filed the next-step task itself.
+    // if it judged the change "too small to forward" and skipped the hand-off,
+    // the chain stalls silently — auto-spawn the missing task so work keeps
+    // moving. the initial pm kickoff task has no parent and is handled by the
+    // JSON path above, so this only affects mid-stream updates.
+    await ensureTrickleDownHandoff({ role, task, text });
 
     const finalRow = await getTaskById(task.id);
     if (finalRow) {
@@ -331,6 +346,23 @@ export async function executeTask(role: Role, task: Task): Promise<void> {
         },
       });
 
+      if (isOverseerRequest(task)) {
+        emit({
+          projectId: task.projectId,
+          role,
+          taskId: task.id,
+          type: 'chat',
+          payload: {
+            from: role,
+            direction: 'from-agent',
+            text: `CTO hit a transient provider error while working on your overseer request — retrying (attempt ${attempt}/${settings.maxRetries}).\nReason: ${reason}`,
+            scope: 'overseer',
+            taskRef: task.id,
+            taskTitle: task.title,
+          },
+        });
+      }
+
       await new Promise((resolve) => setTimeout(resolve, 15_000));
       return;
     }
@@ -361,6 +393,23 @@ export async function executeTask(role: Role, task: Task): Promise<void> {
       },
     });
 
+    if (isOverseerRequest(task)) {
+      emit({
+        projectId: task.projectId,
+        role,
+        taskId: task.id,
+        type: 'chat',
+        payload: {
+          from: role,
+          direction: 'from-agent',
+          text: `CTO could not complete your overseer request — the ticket is now in the failed lane. Reason: ${reason}`,
+          scope: 'overseer',
+          taskRef: task.id,
+          taskTitle: task.title,
+        },
+      });
+    }
+
     // a reviewer failing permanently would otherwise leave the reviewed task
     // stuck in 'pending-review' forever. surface the failure up the chain so
     // it moves out of the pending-review lane and into 'failed'.
@@ -385,6 +434,13 @@ export async function executeTask(role: Role, task: Task): Promise<void> {
 }
 
 const attemptCounts = new Map<string, number>();
+
+// ticket originated from the overseer chat — failure / retry chatter should
+// also surface in the overseer scope so the human who typed the request sees
+// it, not just anyone opening the task detail.
+function isOverseerRequest(task: Task): boolean {
+  return task.role === 'cto' && task.title.startsWith('Overseer request:');
+}
 
 function incrementAttempt(taskId: string): number {
   const next = (attemptCounts.get(taskId) ?? 0) + 1;
@@ -505,7 +561,6 @@ function parseReviewerOutput(text: string): ReviewerStructured {
  * completed code artifact escapes without review.
  */
 async function scheduleReviewOf(finished: Task): Promise<void> {
-  if (finished.role === 'orchestrator') return;
 
   // review title uses the clean base title too, so the kanban doesn't show
   // "Review: Fix #3: Fix #2: Fix #1: ..." in the review lane.
@@ -671,7 +726,16 @@ async function handleReviewerOutcome(
 
   const fixRole = resolveFixRole(review.incidents, reviewed.role);
   const iteration = currentIteration + 1;
-  const fixDescription = buildFixBrief(reviewed, reviewerTask, review, iteration);
+  const reviewHistory = await collectReviewHistory(reviewerTask);
+  const rootTicket = await getTaskChainRoot(reviewerTask.id);
+  const fixDescription = buildFixBrief({
+    reviewed,
+    reviewer: reviewerTask,
+    currentReview: review,
+    iteration,
+    reviewHistory,
+    rootTicket: rootTicket ?? reviewed,
+  });
   // strip any prior "Fix #N: " prefix so titles don't stack into
   // "Fix #3: Fix #2: Fix #1: ..." across successive review rounds.
   const baseTitle = stripFixPrefix(reviewed.title);
@@ -728,43 +792,186 @@ function resolveFixRole(incidents: ReviewerIncident[], fallback: string): Role {
   return normalizeRole(fallback);
 }
 
-function buildFixBrief(
-  reviewed: Task,
-  reviewer: Task,
-  review: ReviewerStructured,
-  iteration: number,
-): string {
-  const lines = [
-    `Iteration ${iteration}: address reviewer feedback for "${reviewed.title}".`,
-    '',
-    'Original ticket:',
-    reviewed.description || '(no description)',
-    '',
-    `Reviewer verdict: ${review.verdict}`,
-  ];
-  if (review.summary) {
-    lines.push(`Reviewer summary: ${review.summary}`);
-  }
-  lines.push('', 'Incidents to resolve:');
-  if (review.incidents.length === 0) {
-    lines.push('- (reviewer flagged issues but did not enumerate incidents — re-read the review narrative)');
-  } else {
-    review.incidents.forEach((incident, index) => {
-      const severity = incident.severity ? `[${incident.severity}] ` : '';
-      lines.push(`${index + 1}. ${severity}${incident.title ?? '(no title)'}`);
-      if (incident.description) {
-        lines.push(`   ${incident.description}`);
+interface ReviewHistoryEntry {
+  iteration: number;
+  reviewerTaskId: string;
+  reviewedTaskId: string;
+  reviewedTitle: string;
+  review: ReviewerStructured;
+}
+
+// walks up the parent chain of a reviewer task and collects every prior
+// reviewer verdict in order (oldest first). this gives the next fix attempt
+// the full feedback trail — not just the latest review — so the agent can see
+// which incidents have been repeatedly flagged across iterations.
+async function collectReviewHistory(reviewerTask: Task): Promise<ReviewHistoryEntry[]> {
+  const history: ReviewHistoryEntry[] = [];
+  let cursor: Task | undefined = reviewerTask;
+  const seen = new Set<string>();
+  while (cursor && !seen.has(cursor.id)) {
+    seen.add(cursor.id);
+    if (cursor.role === 'reviewer') {
+      const result = (cursor.result ?? {}) as Record<string, unknown>;
+      const raw = result.review;
+      if (isReviewerStructured(raw)) {
+        const reviewed = cursor.parentTaskId ? await getTaskById(cursor.parentTaskId) : undefined;
+        history.push({
+          iteration: cursor.iteration ?? 0,
+          reviewerTaskId: cursor.id,
+          reviewedTaskId: reviewed?.id ?? '',
+          reviewedTitle: reviewed?.title ?? '(unknown)',
+          review: raw,
+        });
       }
+    }
+    if (!cursor.parentTaskId) break;
+    cursor = await getTaskById(cursor.parentTaskId);
+  }
+  return history.reverse();
+}
+
+interface BuildFixBriefArgs {
+  reviewed: Task;
+  reviewer: Task;
+  currentReview: ReviewerStructured;
+  iteration: number;
+  reviewHistory: ReviewHistoryEntry[];
+  rootTicket: Task;
+}
+
+function formatIncident(incident: ReviewerIncident, index: number): string[] {
+  const severity = incident.severity ? `[${incident.severity}] ` : '';
+  const title = incident.title ?? '(no title)';
+  const out = [`  ${index + 1}. ${severity}${title}`];
+  if (incident.description) {
+    out.push(`     ${incident.description}`);
+  }
+  if (incident.role) {
+    out.push(`     suggested role: ${incident.role}`);
+  }
+  return out;
+}
+
+function buildFixBrief(args: BuildFixBriefArgs): string {
+  const { reviewed, reviewer, currentReview, iteration, reviewHistory, rootTicket } = args;
+
+  const lines: string[] = [
+    `Iteration ${iteration}: address reviewer feedback for "${stripFixPrefix(rootTicket.title)}".`,
+    '',
+    '## Root ticket (the original work this chain is attempting)',
+    `Title: ${stripFixPrefix(rootTicket.title)}`,
+    `Role: ${rootTicket.role}`,
+    'Description:',
+    rootTicket.description?.trim() || '(no description)',
+  ];
+
+  if (rootTicket.userNotes) {
+    lines.push('', '--- human notes on root ticket ---', rootTicket.userNotes);
+  }
+
+  const priorHistory = reviewHistory.filter((entry) => entry.reviewerTaskId !== reviewer.id);
+  if (priorHistory.length > 0) {
+    lines.push(
+      '',
+      '## Prior review history (oldest first)',
+      'These reviews fired on earlier iterations in this same chain. Incidents that appear here AND in the latest review below have been repeatedly flagged — pay extra attention, the previous attempts did NOT fix them.',
+      '',
+    );
+    priorHistory.forEach((entry) => {
+      lines.push(
+        `### Review iteration ${entry.iteration} — verdict: ${entry.review.verdict}`,
+      );
+      if (entry.review.summary) {
+        lines.push(`Summary: ${entry.review.summary}`);
+      }
+      if (entry.review.incidents.length === 0) {
+        lines.push('  (no enumerated incidents)');
+      } else {
+        entry.review.incidents.forEach((incident, idx) => {
+          lines.push(...formatIncident(incident, idx));
+        });
+      }
+      lines.push('');
     });
   }
+
+  lines.push(
+    '## Latest review (you MUST resolve all of these)',
+    `Verdict: ${currentReview.verdict}`,
+  );
+  if (currentReview.summary) {
+    lines.push(`Summary: ${currentReview.summary}`);
+  }
+  lines.push('Incidents to resolve:');
+  if (currentReview.incidents.length === 0) {
+    lines.push('  (reviewer flagged issues but did not enumerate incidents — re-read the review narrative)');
+  } else {
+    currentReview.incidents.forEach((incident, idx) => {
+      lines.push(...formatIncident(incident, idx));
+    });
+  }
+
+  const repeatedIncidentTitles = findRepeatedIncidents(priorHistory, currentReview);
+  if (repeatedIncidentTitles.length > 0) {
+    lines.push(
+      '',
+      '## ⚠️ Repeated incidents (flagged ≥ 2 iterations in a row)',
+      'Your previous attempts did NOT fix the following. Re-read the filesystem state first; do not assume prior writes landed as intended.',
+    );
+    repeatedIncidentTitles.forEach((title) => lines.push(`  - ${title}`));
+  }
+
   lines.push(
     '',
+    '## Execution checklist for this iteration',
+    '1. Re-read the current state on disk with `file_system.list` / `file_system.read` for every path the reviewer cited. Do NOT trust memory from earlier iterations — files may or may not exist the way you left them.',
+    '2. If the reviewer flagged duplicate or mis-named files, DELETE the obsolete ones (`file_system.delete`) in addition to creating the renamed ones. Renaming = delete old + write new.',
+    '3. Cross-check every fix against `.software-house/PLAN.md` (or ARCHITECTURE.md / REQUIREMENTS.md as applicable) so the same reviewer does not fire on the same issue again.',
+    '4. Address EVERY incident above — latest and repeated — in a single pass. A partial fix will just queue another iteration.',
+    '',
     `Reviewer task id: ${reviewer.id}`,
-    `Original task id: ${reviewed.id}`,
+    `Reviewed task id: ${reviewed.id}`,
+    `Root ticket id: ${rootTicket.id}`,
     '',
     'Apply the fix end-to-end. A new reviewer pass will follow automatically.',
   );
+
   return lines.join('\n');
+}
+
+// returns normalized titles of incidents that appear in the current review AND
+// in at least one prior review in the same chain. used to highlight "you've
+// been told this before" cases in the fix brief.
+function findRepeatedIncidents(
+  prior: ReviewHistoryEntry[],
+  current: ReviewerStructured,
+): string[] {
+  if (prior.length === 0 || current.incidents.length === 0) return [];
+  const priorTitles = new Set<string>();
+  for (const entry of prior) {
+    for (const incident of entry.review.incidents) {
+      const key = normalizeIncidentKey(incident);
+      if (key) priorTitles.add(key);
+    }
+  }
+  const repeated: string[] = [];
+  const seenDisplay = new Set<string>();
+  for (const incident of current.incidents) {
+    const key = normalizeIncidentKey(incident);
+    if (key && priorTitles.has(key)) {
+      const display = incident.title?.trim() || incident.description?.slice(0, 120) || key;
+      if (!seenDisplay.has(display)) {
+        seenDisplay.add(display);
+        repeated.push(display);
+      }
+    }
+  }
+  return repeated;
+}
+
+function normalizeIncidentKey(incident: ReviewerIncident): string {
+  const raw = (incident.title ?? incident.description ?? '').toLowerCase().trim();
+  return raw.replace(/\s+/g, ' ').slice(0, 160);
 }
 
 class EmptyAgentOutputError extends Error {
@@ -790,12 +997,24 @@ function isTransientError(err: unknown): boolean {
     status?: number;
     isRetryable?: boolean;
     message?: string;
+    responseBody?: string;
   };
   if (candidate.statusCode === 429 || candidate.status === 429) return true;
   if (candidate.statusCode && candidate.statusCode >= 500) return true;
   if (candidate.isRetryable === true) return true;
   const msg = (candidate.message ?? '').toLowerCase();
-  return msg.includes('rate limit') || msg.includes('timeout') || msg.includes('econnreset');
+  if (msg.includes('rate limit') || msg.includes('timeout') || msg.includes('econnreset')) return true;
+
+  // Gemini/Vertex sometimes 400s with INVALID_ARGUMENT "must include at least
+  // one parts field" when the streamed conversation reaches a state its
+  // validator rejects (empty content, tool-only assistant turn, odd schema
+  // coercion). These are provider-side flakes — a fresh attempt with the same
+  // input usually succeeds, so treat them as transient.
+  const body = (candidate.responseBody ?? '').toLowerCase();
+  if (body.includes('must include at least one parts field')) return true;
+  if (body.includes('invalid_argument') && body.includes('parts')) return true;
+
+  return false;
 }
 
 // extracts the most human-readable failure reason from an API error,
@@ -1029,17 +1248,6 @@ const ROLE_ALIASES: Record<string, Role> = {
   'manual tester': 'tester',
 };
 
-function extractOrchestrationJsonStr(output: string): string | null {
-  const codeBlockMatch = output.match(/```(?:json)?\n?([\s\S]*?)\n?```/);
-  const searchIn = codeBlockMatch ? codeBlockMatch[1] : output;
-  const jsonMatch = searchIn.match(/\[[\s\S]*\]/);
-  return jsonMatch ? jsonMatch[0] : null;
-}
-
-function hasOrchestrationJson(output: string): boolean {
-  return extractOrchestrationJsonStr(output) !== null;
-}
-
 function normalizeRole(raw: string): Role {
   const lower = raw.toLowerCase().trim();
   if (ROLE_ALIASES[lower]) return ROLE_ALIASES[lower];
@@ -1050,126 +1258,150 @@ function normalizeRole(raw: string): Role {
   return match ?? (lower as Role);
 }
 
-async function createSubtasksFromOrchestration(
-  projectId: string,
-  orchestrationOutput: string,
-): Promise<void> {
-  try {
-    const jsonStr = extractOrchestrationJsonStr(orchestrationOutput);
-    if (!jsonStr) {
-      console.error('[orchestration] no JSON found in output — this should have been caught earlier');
-      emit({
-        projectId,
-        role: 'orchestrator',
-        type: 'chat',
-        payload: {
-          from: 'orchestrator',
-          direction: 'from-agent',
-          text: 'Orchestrator finished but produced no task list. The output did not contain a parseable JSON array.',
-          scope: 'overseer',
-        },
-      });
-      return;
-    }
+// map of "who must hand off to whom" in the strict trickle-down chain.
+// pm → architect, architect → techlead. techlead fans out to every
+// implementation / devops / testing / docs role via its own create_task
+// allowlist, so we don't auto-spawn for it. cto only triggers the chain
+// (pm or architect) via create_task, never via auto-spawn.
+const TRICKLE_DOWN_NEXT_STEP: Partial<Record<Role, Role>> = {
+  pm: 'architect',
+  architect: 'techlead',
+};
 
-    const rawTasks = JSON.parse(jsonStr) as Array<{
-      role: string;
-      title: string;
-      description: string;
-      dependsOn?: string[];
-    }>;
-
-    // orchestrator must never re-enqueue itself — that causes unbounded recursion
-    const tasks = rawTasks.filter((subtask) => {
-      if (normalizeRole(subtask.role) === 'orchestrator') {
-        console.log(`[orchestration] dropping self-referential orchestrator subtask: ${subtask.title}`);
-        return false;
-      }
-      return true;
-    });
-
-    console.log(`[orchestration] parsing ${tasks.length} subtasks`);
-
-    const normalizedTasks = tasks.map((subtask) => ({
-      ...subtask,
-      roleNormalized: normalizeRole(subtask.role),
-    }));
-
-    const augmentedDepsByTitle = augmentPhaseDependencies(normalizedTasks);
-    const createdTaskMap = new Map<string, string>();
-
-    for (const subtask of normalizedTasks) {
-      const augmentedDepTitles = augmentedDepsByTitle.get(subtask.title) ?? [];
-      const dependsOnIds = augmentedDepTitles
-        .map((depName) => createdTaskMap.get(depName))
-        .filter((id) => Boolean(id)) as string[];
-
-      const created = await createTask({
-        projectId,
-        role: subtask.roleNormalized,
-        title: subtask.title,
-        description: subtask.description,
-        dependsOn: dependsOnIds,
-      });
-
-      createdTaskMap.set(subtask.title, created.id);
-      console.log(`[orchestration] created: ${subtask.title}`);
-
-      emit({
-        projectId,
-        role: subtask.roleNormalized,
-        taskId: created.id,
-        type: 'task-update',
-        payload: kanbanTaskPayload(created),
-      });
-    }
-
-    console.log(`[orchestration] done`);
-  } catch (err) {
-    console.error('[orchestration] error:', err);
+// heuristic rewrite for the downstream title. when the source task is an
+// initial kickoff (no parent, original brief), we word it as "Draft …" so the
+// downstream role knows this is the first pass; otherwise we treat it as a
+// mid-stream update ("Update …" / "Replan …").
+function isKickoffTitle(role: Role, title: string): boolean {
+  const normalized = title.trim().toLowerCase();
+  if (role === 'pm') {
+    return (
+      normalized.startsWith('kick off') ||
+      normalized.startsWith('kickoff') ||
+      normalized.startsWith('kickoff regenerate')
+    );
   }
+  if (role === 'architect') {
+    return normalized.startsWith('draft architecture');
+  }
+  return false;
 }
 
-// phase-ordering rules, enforced regardless of what the orchestrator emits:
-// - devops tickets wait for every implementation/planning ticket (everything
-//   that isn't devops/tester), because devops needs to see the chosen stack
-//   on disk before writing env/deploy config.
-// - tester tickets wait for every non-tester ticket (including devops), so the
-//   app is complete and runnable locally before any manual testing starts.
-function augmentPhaseDependencies(
-  subtasks: Array<{ title: string; roleNormalized: Role; dependsOn?: string[] }>,
-): Map<string, string[]> {
-  const implementationTitles = subtasks
-    .filter((subtask) => subtask.roleNormalized !== 'devops' && subtask.roleNormalized !== 'tester')
-    .map((subtask) => subtask.title);
-
-  const nonTesterTitles = subtasks
-    .filter((subtask) => subtask.roleNormalized !== 'tester')
-    .map((subtask) => subtask.title);
-
-  const merged = new Map<string, string[]>();
-
-  for (const subtask of subtasks) {
-    const originalDeps = subtask.dependsOn ?? [];
-    const enforcedDeps =
-      subtask.roleNormalized === 'tester'
-        ? nonTesterTitles.filter((title) => title !== subtask.title)
-        : subtask.roleNormalized === 'devops'
-          ? implementationTitles
-          : [];
-
-    const seen = new Set<string>();
-    const deps: string[] = [];
-    for (const depTitle of [...originalDeps, ...enforcedDeps]) {
-      if (depTitle === subtask.title) continue;
-      if (seen.has(depTitle)) continue;
-      seen.add(depTitle);
-      deps.push(depTitle);
-    }
-    merged.set(subtask.title, deps);
+function rewriteTitleForNextStep(
+  sourceRole: Role,
+  sourceTitle: string,
+  isKickoff: boolean,
+): string {
+  const stripped = sourceTitle
+    .replace(/^(kick ?off( project)?|kickoff regenerate|update (requirements?|architecture)( for)?|replan( for)?|investigate( and fix)?)[:\s]*/i, '')
+    .trim();
+  const subject = stripped || sourceTitle;
+  if (sourceRole === 'pm') {
+    return isKickoff ? `Draft architecture for ${subject}` : `Update architecture for ${subject}`;
   }
+  return isKickoff ? `Plan implementation for ${subject}` : `Replan for ${subject}`;
+}
 
-  return merged;
+async function ensureTrickleDownHandoff(args: {
+  role: Role;
+  task: Task;
+  text: string;
+}): Promise<void> {
+  const { role, task } = args;
+  const nextRole = TRICKLE_DOWN_NEXT_STEP[role];
+  if (!nextRole) return;
+
+  // if the agent already filed the handoff (via create_task), don't duplicate.
+  const children = await listChildTasks(task.id);
+  if (children.some((child) => child.role === nextRole)) return;
+
+  // kickoff detection is title-based rather than parent-based because
+  // architect and techlead kickoff tickets are spawned via create_task (so
+  // they always have a parent). on kickoff the downstream title should say
+  // "Draft …" / "Plan implementation …"; on a mid-stream update it should say
+  // "Update …" / "Replan …".
+  const isKickoff = isKickoffTitle(role, task.title);
+  const rationale = [
+    `Forwarded automatically by the runtime because ${role} did not file a ${nextRole} task explicitly.`,
+    `The ${role} completion summary is preserved on task ${task.id} (title: "${task.title}").`,
+  ].join(' ');
+
+  const nextTitle = rewriteTitleForNextStep(role, task.title, isKickoff);
+  const kickoffInstructionsPm =
+    'Read .software-house/REQUIREMENTS.md end-to-end. Produce .software-house/ARCHITECTURE.md with every section populated to the level of detail the architect prompt describes (Stack / Module Boundaries / Data Model / Key Flows / Deployment Shape / Risks). If any architectural decision that shapes the system (auth model, storage, framework, multi-tenancy, deploy topology) is genuinely ambiguous, ask via `ask_clarifying_questions` before committing. Then hand off to techlead with a `Plan implementation for <scope>` ticket — the runtime auto-spawns it if you forget.';
+  const updateInstructionsPm =
+    'Read the freshly updated .software-house/REQUIREMENTS.md and refresh .software-house/ARCHITECTURE.md to match. When you finish, hand off to techlead with a Replan ticket — the runtime will auto-spawn it if you forget.';
+  const kickoffInstructionsArchitect =
+    'Read .software-house/REQUIREMENTS.md and the freshly drafted .software-house/ARCHITECTURE.md end-to-end. Produce .software-house/PLAN.md with a full work breakdown (per-chunk file paths, acceptance tests, dependency graph, risks). Then file EVERY ticket the project needs: implementation (backend-dev / frontend-dev), devops phase 1 (local env + README) and phase 2 (deployment + README extension), a closing manual-test ticket when the upstream TESTING signal is `required`, a writer ticket when the surface shifts user-facing behaviour, and a security ticket when the stack warrants one. Use task-id `dependsOn` to sequence devops after implementation and tester after devops.';
+  const updateInstructionsArchitect =
+    'Read the freshly updated .software-house/ARCHITECTURE.md (and REQUIREMENTS.md) and refresh .software-house/PLAN.md. File implementation / devops tickets for every chunk of new work and — when the upstream TESTING signal is `required` — a closing manual-test ticket.';
+
+  const instructions =
+    role === 'pm'
+      ? isKickoff
+        ? kickoffInstructionsPm
+        : updateInstructionsPm
+      : isKickoff
+        ? kickoffInstructionsArchitect
+        : updateInstructionsArchitect;
+
+  const description = [
+    rationale,
+    '',
+    `## Upstream ${role} brief`,
+    task.description.trim() || '(no description)',
+    '',
+    '## What you need to do',
+    instructions,
+    '',
+    `TESTING: ${extractTestingSignal(task.description) ?? 'required'}`,
+  ].join('\n');
+
+  // gate the auto-spawned follow-up on the parent task so the claim loop
+  // doesn't start it until the reviewer has approved (done) the parent. the
+  // claim query only treats `done` / `skipped` dependencies as satisfied, so
+  // this parks the follow-up safely behind the still-pending-review parent.
+  const created = await createTask({
+    projectId: task.projectId,
+    role: nextRole,
+    title: nextTitle,
+    description,
+    status: 'todo',
+    parentTaskId: task.id,
+    dependsOn: [task.id],
+  });
+
+  console.log(
+    `[trickle-down] auto-spawned ${nextRole} task ${created.id} because ${role} task ${task.id} did not file one`,
+  );
+
+  emit({
+    projectId: task.projectId,
+    role: nextRole,
+    taskId: created.id,
+    type: 'task-update',
+    payload: { ...kanbanTaskPayload(created), source: `auto:${role}` },
+  });
+
+  emit({
+    projectId: task.projectId,
+    role,
+    taskId: task.id,
+    type: 'chat',
+    payload: {
+      from: 'system',
+      direction: 'from-agent',
+      text: `Auto-queued a ${nextRole} follow-up (${created.id}) because ${role} finished without filing one — keeping the CTO → PM → Architect → Tech Lead chain intact.`,
+      scope: 'task',
+    },
+  });
+}
+
+function extractTestingSignal(description: string): 'required' | 'skip' | null {
+  const match = description.match(/^\s*TESTING:\s*(required|skip)\s*$/im);
+  if (!match) return null;
+  const value = match[1].toLowerCase();
+  return value === 'required' ? 'required' : 'skip';
 }
 
 async function createBugReportTasks(

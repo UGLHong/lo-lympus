@@ -162,19 +162,19 @@ async function regenerateFailedTask(task: Task) {
     });
   }
 
-  const orchestratorTask = await createTask({
+  const kickoffTask = await createTask({
     projectId: task.projectId,
-    role: 'orchestrator',
-    title: `Regenerate: ${root.title}`,
+    role: 'pm',
+    title: `Kickoff regenerate: ${root.title}`,
     description: brief,
   });
 
   emit({
-    projectId: orchestratorTask.projectId,
-    role: 'orchestrator',
-    taskId: orchestratorTask.id,
+    projectId: kickoffTask.projectId,
+    role: 'pm',
+    taskId: kickoffTask.id,
     type: 'task-update',
-    payload: kanbanTaskPayload(orchestratorTask),
+    payload: kanbanTaskPayload(kickoffTask),
   });
   emit({
     projectId: task.projectId,
@@ -184,7 +184,7 @@ async function regenerateFailedTask(task: Task) {
     payload: {
       from: 'system',
       direction: 'from-agent',
-      text: `Task sent back to the Orchestrator for regeneration based on the failure history. ${skipped.length} task(s) in the failed chain marked as skipped.`,
+      text: `Task sent back to the PM for regeneration based on the failure history. ${skipped.length} task(s) in the failed chain marked as skipped.`,
       scope: 'task',
     },
   });
@@ -192,7 +192,7 @@ async function regenerateFailedTask(task: Task) {
   return Response.json({
     ok: true,
     skippedCount: skipped.length,
-    orchestratorTaskId: orchestratorTask.id,
+    kickoffTaskId: kickoffTask.id,
   });
 }
 
@@ -230,10 +230,11 @@ function buildRegenerationBrief(root: Task, chainTasks: Task[]): string {
     '',
     '## Your job',
     'Re-examine the original intent and the failure history above. Decide whether the ticket still belongs in this project.',
-    '- If it does, emit ONE fresh subtask (or a small set) that replaces the failed work and fits the current state of the codebase. Do not re-emit the exact same brief — incorporate lessons from the failure history.',
-    '- If the ticket no longer fits the project, emit an empty array.',
+    '- If it does, refresh .software-house/REQUIREMENTS.md (add a Revision log entry explaining the regeneration and any scope adjustment based on the failure history) and then hand off to the architect via create_task so the architecture / planning / implementation chain re-runs for this scope.',
+    '- If the ticket no longer fits the project, update REQUIREMENTS.md to reflect the scope change and do NOT file an architect task — state the decision explicitly in your completion summary.',
+    'Do not file any other tickets yourself — coders / devops / tester tickets come from the techlead once architecture lands.',
     '',
-    'Respond with the usual orchestration JSON array of subtasks.',
+    'TESTING: required',
   );
 
   return lines.join('\n');

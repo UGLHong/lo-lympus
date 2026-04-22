@@ -1,5 +1,4 @@
 export const ROLES = [
-  'orchestrator',
   'pm',
   'architect',
   'techlead',
@@ -12,19 +11,21 @@ export const ROLES = [
   'security',
   'release',
   'writer',
-  'incident',
+  'cto',
 ] as const;
 
 export type Role = (typeof ROLES)[number];
 
-export const ROLE_TIER: Record<Role, 'FAST' | 'REASONING' | 'CODING' | 'VISION'> = {
-  orchestrator: 'REASONING',
-  pm: 'REASONING',
-  architect: 'REASONING',
-  techlead: 'REASONING',
+export const ROLE_TIER: Record<
+  Role,
+  'FAST' | 'REASONING' | 'CODING' | 'VISION' | 'COMPLEX' | 'PLANNING'
+> = {
+  pm: 'PLANNING',
+  architect: 'PLANNING',
+  techlead: 'PLANNING',
   reviewer: 'REASONING',
   security: 'REASONING',
-  incident: 'REASONING',
+  cto: 'COMPLEX',
   'backend-dev': 'CODING',
   'frontend-dev': 'CODING',
   devops: 'CODING',
@@ -35,7 +36,6 @@ export const ROLE_TIER: Record<Role, 'FAST' | 'REASONING' | 'CODING' | 'VISION'>
 };
 
 export const ROLE_COLOR: Record<Role, string> = {
-  orchestrator: '#ef4444',
   pm: '#f59e0b',
   architect: '#f472b6',
   techlead: '#6366f1',
@@ -48,20 +48,19 @@ export const ROLE_COLOR: Record<Role, string> = {
   security: '#dc2626',
   release: '#14b8a6',
   writer: '#64748b',
-  incident: '#f97316',
+  cto: '#f97316',
 };
 
-// roles that lead orchestration/planning work. they are allowed (and
-// encouraged) to batch-ask clarifying questions up-front rather than
-// silently guessing when requirements are ambiguous.
+// roles that lead planning work. they are allowed (and encouraged) to
+// batch-ask clarifying questions up-front rather than silently guessing when
+// requirements are ambiguous.
 export const PLANNING_ROLES: ReadonlySet<Role> = new Set<Role>([
-  'orchestrator',
   'pm',
   'architect',
   'techlead',
   'reviewer',
   'security',
-  'incident',
+  'cto',
 ]);
 
 export function isPlanningRole(role: Role): boolean {
@@ -69,7 +68,6 @@ export function isPlanningRole(role: Role): boolean {
 }
 
 export const ROLE_LABEL: Record<Role, string> = {
-  orchestrator: 'Orchestrator',
   pm: 'Product Manager',
   architect: 'Architect',
   techlead: 'Tech Lead',
@@ -82,5 +80,5 @@ export const ROLE_LABEL: Record<Role, string> = {
   security: 'Security',
   release: 'Release',
   writer: 'Writer',
-  incident: 'Incident',
+  cto: 'CTO',
 };

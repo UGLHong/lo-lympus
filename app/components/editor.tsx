@@ -1,8 +1,18 @@
-import { CircleDot, Eye, EyeOff, FileX2, RefreshCw } from 'lucide-react';
+import {
+  CircleDot,
+  Eye,
+  EyeOff,
+  FileX2,
+  Pin,
+  PinOff,
+  RefreshCw,
+  Zap,
+} from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { OnMount } from '@monaco-editor/react';
 
-import { useWorkspace } from '../lib/workspace-context';
+import { useFollowMode } from '../lib/follow-mode';
+import { useWorkspace, type ActiveStream } from '../lib/workspace-context';
 import { ROLE_COLOR, ROLE_LABEL, ROLES, type Role } from '../lib/roles';
 import { cn } from '../lib/cn';
 
@@ -13,7 +23,18 @@ interface EditorProps {
 }
 
 export function Editor({ projectId: _projectId }: EditorProps) {
-  const { openFileState, closeFile, autoFollow, setAutoFollow, openFile } = useWorkspace();
+  const {
+    openFileState,
+    closeFile,
+    autoFollow,
+    setAutoFollow,
+    openFile,
+    activeStreams,
+    isPinned,
+    unpin,
+    jumpToStream,
+  } = useWorkspace();
+  const { followRole, setFollowRole } = useFollowMode();
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
   const isStreaming = openFileState?.streamingRole != null;
@@ -43,15 +64,46 @@ export function Editor({ projectId: _projectId }: EditorProps) {
     closeFile();
   }, [closeFile]);
 
+  const handleUnpin = useCallback(() => {
+    unpin();
+  }, [unpin]);
+
+  const handleJumpToStream = useCallback(
+    (path: string) => {
+      void jumpToStream(path);
+    },
+    [jumpToStream],
+  );
+
+  // a stream elsewhere is anything being written that is NOT the file the
+  // editor is currently focused on. shown as clickable chips in the live
+  // ribbon so the user can peek without losing their pin.
+  const streamsElsewhere = useMemo<ActiveStream[]>(() => {
+    const currentPath = openFileState?.path ?? null;
+    return activeStreams.filter((stream) => stream.path !== currentPath);
+  }, [activeStreams, openFileState?.path]);
+
   return (
     <div className="h-full flex flex-col">
       <EditorHeader
         openFileState={openFileState}
         streamingRole={streamingRole}
         autoFollow={autoFollow}
+        isPinned={isPinned}
+        followRole={followRole}
         onToggleFollow={handleToggleFollow}
+        onUnpin={handleUnpin}
+        onClearRoleFilter={() => setFollowRole(null)}
         onReload={handleReload}
         onClose={handleClose}
+      />
+      <LiveStreamRibbon
+        streams={streamsElsewhere}
+        autoFollow={autoFollow}
+        isPinned={isPinned}
+        followRole={followRole}
+        onJump={handleJumpToStream}
+        onResumeFollow={handleUnpin}
       />
       <div className="flex-1 min-h-0 bg-bg-sunken relative">
         {openFileState ? (
@@ -76,7 +128,12 @@ export function Editor({ projectId: _projectId }: EditorProps) {
             />
           </Suspense>
         ) : (
-          <EmptyEditor autoFollow={autoFollow} onToggleFollow={handleToggleFollow} />
+          <EmptyEditor
+            autoFollow={autoFollow}
+            activeStreams={activeStreams}
+            onToggleFollow={handleToggleFollow}
+            onJump={handleJumpToStream}
+          />
         )}
       </div>
     </div>
@@ -87,7 +144,11 @@ interface EditorHeaderProps {
   openFileState: ReturnType<typeof useWorkspace>['openFileState'];
   streamingRole: string | null;
   autoFollow: boolean;
+  isPinned: boolean;
+  followRole: string | null;
   onToggleFollow: () => void;
+  onUnpin: () => void;
+  onClearRoleFilter: () => void;
   onReload: () => void;
   onClose: () => void;
 }
@@ -96,7 +157,11 @@ function EditorHeader({
   openFileState,
   streamingRole,
   autoFollow,
+  isPinned,
+  followRole,
   onToggleFollow,
+  onUnpin,
+  onClearRoleFilter,
   onReload,
   onClose,
 }: EditorHeaderProps) {
@@ -108,6 +173,13 @@ function EditorHeader({
   const streamingColor = streamingRole && (ROLES as readonly string[]).includes(streamingRole)
     ? ROLE_COLOR[streamingRole as Role]
     : undefined;
+
+  const followTooltip = (() => {
+    if (!autoFollow) return 'follow OFF — editor stays on this file';
+    if (isPinned) return 'follow ON but pinned — click unpin to resume';
+    if (followRole) return `following ${ROLE_LABEL[followRole as Role] ?? followRole} only`;
+    return 'following all agents — editor auto-switches to the file being written';
+  })();
 
   return (
     <div className="panel-header gap-2">
@@ -128,19 +200,42 @@ function EditorHeader({
           {formatBytes(openFileState!.bytes)}
         </span>
       )}
+      {followRole && (
+        <button
+          type="button"
+          onClick={onClearRoleFilter}
+          title={`clear role filter (currently only following ${ROLE_LABEL[followRole as Role] ?? followRole})`}
+          className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-accent/40 text-accent hover:border-accent"
+          style={{ borderLeftColor: ROLE_COLOR[followRole as Role], borderLeftWidth: 3 }}
+        >
+          {ROLE_LABEL[followRole as Role] ?? followRole}
+          <span className="text-text-faint">×</span>
+        </button>
+      )}
+      {isPinned && hasFile && (
+        <button
+          type="button"
+          onClick={onUnpin}
+          title="unpin — let follow mode auto-switch to live streams again"
+          className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-amber-500/50 text-amber-300 hover:border-amber-400"
+        >
+          <Pin size={11} />
+          pinned
+        </button>
+      )}
       <button
         type="button"
         onClick={onToggleFollow}
-        title={autoFollow ? 'auto-follow streaming writes is ON' : 'auto-follow streaming writes is OFF'}
+        title={followTooltip}
         className={cn(
           'flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border',
-          autoFollow
+          autoFollow && !isPinned
             ? 'border-accent/40 text-accent'
             : 'border-border text-text-faint hover:text-text',
         )}
       >
         {autoFollow ? <Eye size={11} /> : <EyeOff size={11} />}
-        follow
+        {autoFollow ? (isPinned ? 'follow (paused)' : 'follow') : 'follow off'}
       </button>
       {hasFile && (
         <>
@@ -166,15 +261,104 @@ function EditorHeader({
   );
 }
 
-interface EmptyEditorProps {
+interface LiveStreamRibbonProps {
+  streams: ActiveStream[];
   autoFollow: boolean;
-  onToggleFollow: () => void;
+  isPinned: boolean;
+  followRole: string | null;
+  onJump: (path: string) => void;
+  onResumeFollow: () => void;
 }
 
-function EmptyEditor({ autoFollow, onToggleFollow }: EmptyEditorProps) {
+function LiveStreamRibbon({
+  streams,
+  autoFollow,
+  isPinned,
+  followRole,
+  onJump,
+  onResumeFollow,
+}: LiveStreamRibbonProps) {
+  if (streams.length === 0) return null;
+
+  const wouldBeFollowing = autoFollow && !isPinned;
+  const showResumeHint = !wouldBeFollowing;
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-bg-raised/40">
+      <span className="flex items-center gap-1 text-[10px] font-medium text-accent shrink-0">
+        <Zap size={11} />
+        LIVE
+      </span>
+      <div className="flex-1 min-w-0 flex flex-wrap gap-1">
+        {streams.map((stream) => (
+          <LiveStreamChip
+            key={stream.path}
+            stream={stream}
+            dimmed={Boolean(followRole && followRole !== stream.role)}
+            onJump={onJump}
+          />
+        ))}
+      </div>
+      {showResumeHint && (
+        <button
+          type="button"
+          onClick={onResumeFollow}
+          title="unpin and re-enable follow mode"
+          className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent-soft shrink-0"
+        >
+          <PinOff size={11} />
+          resume follow
+        </button>
+      )}
+    </div>
+  );
+}
+
+interface LiveStreamChipProps {
+  stream: ActiveStream;
+  dimmed: boolean;
+  onJump: (path: string) => void;
+}
+
+function LiveStreamChip({ stream, dimmed, onJump }: LiveStreamChipProps) {
+  const roleColor = stream.role && (ROLES as readonly string[]).includes(stream.role)
+    ? ROLE_COLOR[stream.role as Role]
+    : undefined;
+  const roleLabel = stream.role
+    ? (ROLE_LABEL[stream.role as Role] ?? stream.role)
+    : 'unknown';
+
+  return (
+    <button
+      type="button"
+      onClick={() => onJump(stream.path)}
+      title={`jump to ${stream.path} (being written by ${roleLabel})`}
+      className={cn(
+        'flex items-center gap-1.5 text-[10px] px-1.5 py-0.5 rounded border transition',
+        dimmed
+          ? 'border-border/60 text-text-faint opacity-50 hover:opacity-100'
+          : 'border-border text-text hover:border-accent hover:text-accent',
+      )}
+      style={{ borderLeftColor: roleColor, borderLeftWidth: 3 }}
+    >
+      <CircleDot size={9} className="animate-pulse shrink-0" style={{ color: roleColor }} />
+      <span className="font-medium shrink-0">{roleLabel}</span>
+      <span className="text-text-faint truncate max-w-[220px]">{stream.path}</span>
+    </button>
+  );
+}
+
+interface EmptyEditorProps {
+  autoFollow: boolean;
+  activeStreams: ActiveStream[];
+  onToggleFollow: () => void;
+  onJump: (path: string) => void;
+}
+
+function EmptyEditor({ autoFollow, activeStreams, onToggleFollow, onJump }: EmptyEditorProps) {
   return (
     <div className="absolute inset-0 flex items-center justify-center p-6">
-      <div className="max-w-sm text-center text-xs text-text-muted leading-relaxed space-y-2">
+      <div className="max-w-sm text-center text-xs text-text-muted leading-relaxed space-y-3">
         <div className="text-sm text-text">No file open</div>
         <p>Click a file in the workspace tree to open it here.</p>
         <p>
@@ -189,9 +373,24 @@ function EmptyEditor({ autoFollow, onToggleFollow }: EmptyEditorProps) {
           >
             follow mode {autoFollow ? 'ON' : 'OFF'}
           </button>
-          , the editor will automatically open whichever file the agents are writing right now and
-          stream each character as it lands.
+          , the editor auto-opens whatever file the agents are writing and streams each character as
+          it lands.
         </p>
+        {activeStreams.length > 0 && (
+          <div className="pt-2 border-t border-border space-y-1 text-left">
+            <div className="text-[10px] uppercase tracking-wider text-text-faint text-center">
+              writing right now
+            </div>
+            {activeStreams.map((stream) => (
+              <LiveStreamChip
+                key={stream.path}
+                stream={stream}
+                dimmed={false}
+                onJump={onJump}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,5 +1,4 @@
 export const ROLES = [
-  'orchestrator',
   'pm',
   'architect',
   'techlead',
@@ -12,13 +11,12 @@ export const ROLES = [
   'security',
   'release',
   'writer',
-  'incident',
+  'cto',
 ] as const;
 
 export type Role = (typeof ROLES)[number];
 
 export const ROLE_COLOR: Record<Role, string> = {
-  orchestrator: '#ef4444',
   pm: '#f59e0b',
   architect: '#f472b6',
   techlead: '#6366f1',
@@ -31,11 +29,10 @@ export const ROLE_COLOR: Record<Role, string> = {
   security: '#dc2626',
   release: '#14b8a6',
   writer: '#64748b',
-  incident: '#f97316',
+  cto: '#f97316',
 };
 
 export const ROLE_LABEL: Record<Role, string> = {
-  orchestrator: 'Orchestrator',
   pm: 'Product Manager',
   architect: 'Architect',
   techlead: 'Tech Lead',
@@ -48,7 +45,7 @@ export const ROLE_LABEL: Record<Role, string> = {
   security: 'Security',
   release: 'Release',
   writer: 'Writer',
-  incident: 'Incident',
+  cto: 'CTO',
 };
 
 export function isRole(value: string): value is Role {

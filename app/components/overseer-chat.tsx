@@ -135,7 +135,7 @@ export function OverseerChat({ projectId }: OverseerChatProps) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             projectId,
-            role: 'orchestrator',
+            role: 'cto',
             message: text,
             scope: 'overseer',
             localId,
@@ -153,34 +153,50 @@ export function OverseerChat({ projectId }: OverseerChatProps) {
       <div className="panel-header justify-between">
         <span>Overseer chat</span>
         <span className="text-[10px] text-text-faint">
-          summaries from employees · talk to the orchestrator
+          summaries from employees · talk to the CTO at any time
         </span>
       </div>
 
-      <div className="px-3 py-2 border-b border-border flex flex-wrap gap-1">
-        {ROLES.map((role) => (
-          <button
-            key={role}
-            type="button"
-            onClick={() => setFollowRole(followRole === role ? null : role)}
-            className={cn(
-              'px-2 py-0.5 text-[10px] rounded border',
-              followRole === role
-                ? 'border-accent text-accent bg-accent-soft'
-                : 'border-border text-text-muted hover:border-border-strong',
-            )}
-            style={{ borderLeftColor: ROLE_COLOR[role], borderLeftWidth: 3 }}
-          >
-            {ROLE_LABEL[role]}
-          </button>
-        ))}
+      <div className="px-3 py-2 border-b border-border space-y-1">
+        <div className="text-[10px] text-text-faint">
+          follow mode filter · pick a role to only auto-open that role's files in the editor
+          {followRole && (
+            <button
+              type="button"
+              onClick={() => setFollowRole(null)}
+              className="ml-2 underline text-accent hover:text-accent/80"
+            >
+              clear
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {ROLES.map((role) => (
+            <button
+              key={role}
+              type="button"
+              onClick={() => setFollowRole(followRole === role ? null : role)}
+              className={cn(
+                'px-2 py-0.5 text-[10px] rounded border',
+                followRole === role
+                  ? 'border-accent text-accent bg-accent-soft'
+                  : 'border-border text-text-muted hover:border-border-strong',
+              )}
+              style={{ borderLeftColor: ROLE_COLOR[role], borderLeftWidth: 3 }}
+            >
+              {ROLE_LABEL[role]}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div ref={scrollerRef} className="flex-1 overflow-auto px-3 py-2 space-y-2 text-xs">
         {messages.length === 0 && (
           <div className="text-text-faint italic">
-            no high-level activity yet. completion summaries land here, and anything you type
-            becomes a new orchestrator requirement.
+            no high-level activity yet. anything you type here goes to the CTO — requirements
+            changes, enhancements, follow-up questions, or course-corrections. the CTO will
+            investigate, answer, or delegate the work. follow-ups merge into the active CTO
+            ticket instead of spawning a new one, so you can keep the conversation going.
           </div>
         )}
         {messages.map((message) => (
@@ -192,7 +208,7 @@ export function OverseerChat({ projectId }: OverseerChatProps) {
         <input
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="add a requirement or course-correct the orchestrator"
+          placeholder="ask the CTO, request an enhancement, add a requirement, or follow up"
           disabled={sending}
           className="flex-1 bg-bg-sunken border border-border rounded px-2 py-1.5 text-xs text-text focus:outline-none focus:border-accent disabled:opacity-50"
         />

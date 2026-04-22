@@ -125,6 +125,18 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
             onChange={handleTierChange('vision')}
             placeholder="e.g. openai/gpt-4o"
           />
+          <TextField
+            label="Complex"
+            value={form.modelTiers.complex}
+            onChange={handleTierChange('complex')}
+            placeholder="e.g. anthropic/claude-opus-4 — used by the CTO for big-picture triage"
+          />
+          <TextField
+            label="Planning"
+            value={form.modelTiers.planning}
+            onChange={handleTierChange('planning')}
+            placeholder="e.g. openai/o1 — used by pm / architect / techlead"
+          />
         </section>
 
         <div className="flex items-center gap-3">

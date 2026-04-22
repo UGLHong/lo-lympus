@@ -12,6 +12,7 @@ import { Editor } from './editor';
 import { OverseerChat } from './overseer-chat';
 import { Kanban, type KanbanTask } from './kanban';
 import { Office } from './office';
+import { ProjectActions } from './project-actions';
 import { Terminal } from './terminal';
 import { WorkspaceBrowser } from './workspace-browser';
 import { LiveEventsProvider } from '../lib/live-events';
@@ -34,16 +35,16 @@ export function ControlRoom({ project, initialTasks }: ControlRoomProps) {
 
   return (
     <LiveEventsProvider projectId={project.id}>
-      <WorkspaceProvider projectId={project.id} onFileOpened={handleFileOpened}>
-        <UiProvider>
+      <UiProvider>
+        <WorkspaceProvider projectId={project.id} onFileOpened={handleFileOpened}>
           <ControlRoomInner
             project={project}
             initialTasks={initialTasks}
             tab={tab}
             onTabChange={handleTabSwitch}
           />
-        </UiProvider>
-      </WorkspaceProvider>
+        </WorkspaceProvider>
+      </UiProvider>
     </LiveEventsProvider>
   );
 }
@@ -102,6 +103,7 @@ function ControlRoomInner({ project, initialTasks, tab, onTabChange }: ControlRo
         <span className="text-text-faint">/</span>
         <span className="truncate">{project.name}</span>
         <span className="text-text-faint ml-auto shrink-0">slug: {project.slug}</span>
+        <ProjectActions projectId={project.id} initialTasks={initialTasks} />
         <Link to="/settings" className="btn text-[10px]">
           Settings
         </Link>

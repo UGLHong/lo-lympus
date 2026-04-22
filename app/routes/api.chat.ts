@@ -2,7 +2,14 @@ import { z } from 'zod';
 
 import { emit } from '../lib/event-bus.server';
 import { kanbanTaskPayload } from '../../server/lib/kanban-task-payload';
-import { appendUserNote, createTask, getTaskById, unblockTask } from '../../server/db/queries';
+import {
+  appendToTaskDescription,
+  appendUserNote,
+  createTask,
+  findOpenCtoOverseerTask,
+  getTaskById,
+  unblockTask,
+} from '../../server/db/queries';
 import { getMemory } from '../../server/mastra/runtime';
 import { abortRunningTask } from '../../server/daemon/task-abort-registry';
 
@@ -96,39 +103,98 @@ export async function action({ request }: Route.ActionArgs) {
   });
 
   let spawnedTaskId: string | null = null;
+  let mergedTaskId: string | null = null;
   if (scope === 'overseer' && !taskId) {
-    const orchestratorTask = await createTask({
-      projectId,
-      role: 'orchestrator',
-      title: `Overseer requirement: ${message.slice(0, 60)}${message.length > 60 ? '…' : ''}`,
-      description: [
-        'The human overseer sent a new instruction via the overseer chat.',
-        'Reconcile it with the existing project plan and emit fresh subtasks (or amendments) for the appropriate roles.',
-        '',
-        'Overseer message:',
+    const openCtoTask = await findOpenCtoOverseerTask(projectId);
+
+    if (openCtoTask) {
+      const followup = [
+        `## Follow-up from overseer (${new Date().toISOString()})`,
         message,
-      ].join('\n'),
-    });
-    spawnedTaskId = orchestratorTask.id;
-    emit({
-      projectId,
-      role: 'orchestrator',
-      taskId: orchestratorTask.id,
-      type: 'task-update',
-      payload: kanbanTaskPayload(orchestratorTask),
-    });
-    emit({
-      projectId,
-      role: 'orchestrator',
-      type: 'chat',
-      payload: {
-        from: 'orchestrator',
-        direction: 'from-agent',
-        text: `Queued a re-orchestration ticket for your request.`,
-        scope: 'overseer',
-      },
-    });
+      ].join('\n');
+      const updated = await appendToTaskDescription(openCtoTask.id, followup);
+
+      // status-aware handoff: abort an in-progress run so it restarts with the
+      // appended follow-up, or unblock a blocked-needs-input task so the claim
+      // loop picks it up again (otherwise the follow-up sits in the description
+      // forever and the user sees nothing happen).
+      let mergeNote = 'Added your follow-up to the active CTO ticket — CTO will pick it up on the next pass.';
+      if (openCtoTask.status === 'in-progress') {
+        abortRunningTask(openCtoTask.id);
+        mergeNote = 'Interrupted the active CTO run with your follow-up — CTO will restart with the updated instructions.';
+      } else if (openCtoTask.status === 'blocked-needs-input') {
+        await unblockTask(openCtoTask.id);
+        mergeNote = 'Unblocked the CTO ticket with your follow-up — CTO will resume shortly.';
+      }
+
+      const refreshed = await getTaskById(openCtoTask.id);
+      if (refreshed) {
+        emit({
+          projectId,
+          role: 'cto',
+          taskId: refreshed.id,
+          type: 'task-update',
+          payload: kanbanTaskPayload(refreshed),
+        });
+      } else if (updated) {
+        emit({
+          projectId,
+          role: 'cto',
+          taskId: updated.id,
+          type: 'task-update',
+          payload: kanbanTaskPayload(updated),
+        });
+      }
+      emit({
+        projectId,
+        role: 'cto',
+        type: 'chat',
+        payload: {
+          from: 'cto',
+          direction: 'from-agent',
+          text: mergeNote,
+          scope: 'overseer',
+        },
+      });
+      mergedTaskId = openCtoTask.id;
+    } else {
+      const ctoTask = await createTask({
+        projectId,
+        role: 'cto',
+        title: `Overseer request: ${message.slice(0, 60)}${message.length > 60 ? '…' : ''}`,
+        description: [
+          'The human overseer sent a new instruction via the overseer chat.',
+          'Read the existing spec / plan / generated code and decide how to act:',
+          '- If it is a question you can answer from evidence, reply via a chat event.',
+          '- If it is a requirement change or follow-up work, use `create_task` to delegate concrete tickets to the right role(s).',
+          '- If it is an incident or strategic decision, document the rationale in the task description and queue fixes via `create_task`.',
+          'Never write code yourself — always delegate.',
+          '',
+          'Overseer message:',
+          message,
+        ].join('\n'),
+      });
+      spawnedTaskId = ctoTask.id;
+      emit({
+        projectId,
+        role: 'cto',
+        taskId: ctoTask.id,
+        type: 'task-update',
+        payload: kanbanTaskPayload(ctoTask),
+      });
+      emit({
+        projectId,
+        role: 'cto',
+        type: 'chat',
+        payload: {
+          from: 'cto',
+          direction: 'from-agent',
+          text: 'CTO picking up your request — will investigate and either answer or delegate the work.',
+          scope: 'overseer',
+        },
+      });
+    }
   }
 
-  return Response.json({ ok: true, threadId, spawnedTaskId });
+  return Response.json({ ok: true, threadId, spawnedTaskId, mergedTaskId });
 }

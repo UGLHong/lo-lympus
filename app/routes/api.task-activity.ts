@@ -21,6 +21,11 @@ type ActivityEvent =
       options?: string[];
       context?: string;
       clarifications?: ClarificationShape[];
+      messageType?: 'hitl-question' | 'cto-resolution';
+      triageTaskId?: string;
+      answer?: string;
+      rationale?: string;
+      originalQuestion?: string;
     })
   | (ActivityEventBase & {
       kind: 'tool';
@@ -96,6 +101,16 @@ function toActivity(source: NormalizedSource): ActivityEvent | null {
           }))
           .filter((entry) => entry.question.length > 0)
       : undefined;
+    const messageTypeRaw = typeof p.messageType === 'string' ? p.messageType : undefined;
+    const messageType: 'hitl-question' | 'cto-resolution' | undefined =
+      messageTypeRaw === 'hitl-question' || messageTypeRaw === 'cto-resolution'
+        ? messageTypeRaw
+        : undefined;
+    const triageTaskId = typeof p.triageTaskId === 'string' ? p.triageTaskId : undefined;
+    const answer = typeof p.answer === 'string' ? p.answer : undefined;
+    const rationale = typeof p.rationale === 'string' ? p.rationale : undefined;
+    const originalQuestion = typeof p.originalQuestion === 'string' ? p.originalQuestion : undefined;
+
     return {
       kind: 'chat',
       ...effectiveBase,
@@ -105,6 +120,11 @@ function toActivity(source: NormalizedSource): ActivityEvent | null {
       options,
       context,
       clarifications,
+      messageType,
+      triageTaskId,
+      answer,
+      rationale,
+      originalQuestion,
     };
   }
 
