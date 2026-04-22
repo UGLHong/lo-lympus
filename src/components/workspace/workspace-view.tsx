@@ -4,7 +4,7 @@ import dynamic from 'next/dynamic';
 import matter from 'gray-matter';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { twMerge } from 'tailwind-merge';
 import type { ProjectViewState } from '@/lib/client/project-store';
 import { ROLES } from '@/lib/const/roles';
@@ -33,6 +33,9 @@ export function WorkspaceView({ view }: { view: ProjectViewState }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [content, setContent] = useState<string>('');
   const [loading, setLoading] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(280);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,17 +51,17 @@ export function WorkspaceView({ view }: { view: ProjectViewState }) {
   }, [projectId, view.activeArtifactPaths.length, view.messages.length, view.workspaceFsRevision]);
 
   useEffect(() => {
-    if (!activeArtifactPath || tree.length === 0) return;
-    const resolved = resolveArtifactPath(tree, activeArtifactPath);
-    if (resolved) setSelectedPath(resolved);
-  }, [activeArtifactPath, tree]);
-
-  useEffect(() => {
+    if (tree.length === 0) return;
+    if (activeArtifactPath) {
+      const resolved = resolveArtifactPath(tree, activeArtifactPath);
+      if (resolved) setSelectedPath(resolved);
+      return;
+    }
     if (!selectedPath) {
       const firstFile = findFirstMarkdown(tree) ?? findFirstFile(tree);
       if (firstFile) setSelectedPath(firstFile);
     }
-  }, [tree, selectedPath]);
+  }, [activeArtifactPath, tree, selectedPath]);
 
   useEffect(() => {
     if (!selectedPath) return;
@@ -111,9 +114,40 @@ export function WorkspaceView({ view }: { view: ProjectViewState }) {
 
   const handleSelect = useCallback((path: string) => setSelectedPath(path), []);
 
+  const handleMouseDown = useCallback(() => {
+    isDraggingRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current || !containerRef.current) return;
+
+      const rect = containerRef.current.getBoundingClientRect();
+      const newWidth = e.clientX - rect.left;
+
+      if (newWidth >= 200 && newWidth <= 600) {
+        setSidebarWidth(newWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+    };
+
+    if (isDraggingRef.current) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
   return (
-    <div className="grid h-full grid-cols-[220px_minmax(0,1fr)] bg-olympus-bg">
-      <aside className="flex h-full min-h-0 flex-col border-r border-olympus-border bg-olympus-panel">
+    <div ref={containerRef} className="flex h-full bg-olympus-bg" style={{ userSelect: isDraggingRef.current ? 'none' : 'auto' }}>
+      <aside className="flex h-full min-h-0 flex-col border-r border-olympus-border bg-olympus-panel" style={{ width: `${sidebarWidth}px` }}>
         <div className="border-b border-olympus-border px-3 py-2 text-xs uppercase tracking-wider text-olympus-dim">
           Workspace
         </div>
@@ -122,7 +156,13 @@ export function WorkspaceView({ view }: { view: ProjectViewState }) {
         </div>
       </aside>
 
-      <main className="flex h-full min-h-0 flex-col">
+      <div
+        onMouseDown={handleMouseDown}
+        className="w-1 cursor-col-resize border-r border-olympus-border bg-olympus-border/20 hover:bg-olympus-blue/30 transition-colors"
+        title="Drag to resize workspace panel"
+      />
+
+      <main className="flex h-full min-h-0 flex-col flex-1">
         <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-2 border-b border-olympus-border px-3 py-1.5 text-xs">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate font-mono text-olympus-dim">{selectedPath ?? '(nothing selected)'}</span>

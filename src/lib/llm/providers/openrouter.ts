@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import type { ChatCompletionMessageParam, ChatCompletionToolParam } from "openai/resources/chat/completions";
 import type { ChatRequest, LLMProvider, StreamChunk } from "../types";
 
 type OpenRouterOptions = {
@@ -62,6 +62,10 @@ export function createOpenRouterProvider(
             top_p: req.topP,
             max_tokens: req.maxTokens,
             stream: true,
+            tools: req.tools ? (req.tools.map(t => ({
+              type: 'function',
+              function: t.function,
+            })) as ChatCompletionToolParam[]) : undefined,
           });
           break;
         } catch (error) {

@@ -36,13 +36,12 @@ export function ArtifactCard({ block }: { block: ArtifactBlock }) {
               </span>
             )}
           </div>
-          <div className="mt-1 truncate font-mono text-[11px] text-olympus-dim">{block.path}</div>
+          <div className="mt-1 truncate font-mono text-[11px] text-olympus-accent underline decoration-olympus-accent/40 underline-offset-2 group-hover:decoration-olympus-accent">
+            {block.path}
+          </div>
           {block.excerpt && (
             <div className="mt-1 line-clamp-3 text-xs text-olympus-ink/80">{block.excerpt}</div>
           )}
-          <div className="mt-1.5 text-[10px] uppercase tracking-wider text-olympus-dim/70 opacity-0 transition group-hover:opacity-100">
-            Click to open →
-          </div>
         </div>
       </div>
     </button>

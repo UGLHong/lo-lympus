@@ -108,10 +108,14 @@ function reducer(current: ProjectViewState, action: Action): ProjectViewState {
 
       switch (event.kind) {
         case 'message.created': {
+          const isStreaming = event.message.meta?.streaming !== false;
+          const pendingTokens = isStreaming
+            ? { ...current.pendingTokens, [event.message.id]: '' }
+            : current.pendingTokens;
           return {
             ...current,
             messages: upsertMessage(current.messages, event.message),
-            pendingTokens: { ...current.pendingTokens, [event.message.id]: '' },
+            pendingTokens,
             lastEventTs,
           };
         }
@@ -146,6 +150,13 @@ function reducer(current: ProjectViewState, action: Action): ProjectViewState {
           return {
             ...current,
             state: { ...current.state, phase },
+            lastEventTs,
+          };
+        }
+        case 'pipeline.paused': {
+          return {
+            ...current,
+            state: { ...current.state, paused: true },
             lastEventTs,
           };
         }

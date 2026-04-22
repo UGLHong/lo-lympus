@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { DotLottieReact, type DotLottie } from '@lottiefiles/dotlottie-react';
 import { ROLES, type RoleKey, type RoleState } from '@/lib/const/roles';
 import { cn } from '@/lib/utils/cn';
@@ -12,57 +12,60 @@ type Props = {
   state?: RoleState;
   size?: number;
   className?: string;
+  bgColor?: string;
 };
 
-// named segments the .lottie bundle is expected to expose via state-
-// machine markers. if a marker is missing thorvg falls back to the
-// animation's default frame range, so partial bundles still render.
-const STATE_TO_MARKER: Record<RoleState, string> = {
-  'off-duty': 'idle',
-  idle: 'idle',
-  thinking: 'thinking',
-  typing: 'typing',
-  reviewing: 'reviewing',
-  testing: 'testing',
-  blocked: 'blocked',
-  celebrating: 'celebrating',
-};
+// setMarker is intentionally omitted: the current .lottie bundles contain
+// markers with inverted frame bounds that cause a thorvg WASM panic inside
+// requestAnimationFrame (uncatchable by JS try-catch or error boundaries).
+// re-enable once the bundles are rebuilt with valid marker segments.
 
 const ROLE_BUNDLE_BASE = process.env.NEXT_PUBLIC_OLYMPUS_AVATAR_BASE ?? '/avatars';
 
 // renders a per-role dotLottie (thorvg) avatar from `<public>/avatars/<role>.lottie`.
-// availability is driven by `public/avatars/manifest.json`, so adding a new
-// asset is a two-step opt-in: drop the bundle in place, list the role key in
-// the manifest. when the manifest says the role isn't ready we render the
-// colored-disc placeholder instead of chasing a 404.
-export function DotLottieRoleAvatar({ role, state = 'idle', size = 52, className }: Props) {
+// availability is driven by `public/avatars/manifest.json`; when the manifest
+// omits the role or the WASM player emits a render/load error we fall back to
+// the colored-disc placeholder so crashes are never visible to the user.
+export function DotLottieRoleAvatar({ role, state = 'idle', size = 52, className, bgColor }: Props) {
   const manifest = useAvatarManifest(ROLE_BUNDLE_BASE);
-  const playerRef = useRef<DotLottie | null>(null);
+  const [dotLottie, setDotLottie] = useState<DotLottie | null>(null);
+  const [hasError, setHasError] = useState(false);
   const bundleUrl = `${ROLE_BUNDLE_BASE}/${role}.lottie`;
   const def = ROLES[role];
   const hasAsset = manifest?.roles.includes(role) ?? null;
+  const backgroundColor = bgColor ?? `linear-gradient(135deg, ${def.color}22, ${def.color}11)`;
+
+  const handleReady = useCallback((instance: DotLottie | null) => {
+    setDotLottie(instance);
+  }, []);
 
   useEffect(() => {
-    const player = playerRef.current;
-    if (!player || hasAsset !== true) return;
+    if (!dotLottie || hasAsset !== true) return;
 
-    const marker = STATE_TO_MARKER[state] ?? 'idle';
-    try {
-      player.setMarker(marker);
-      player.play();
-    } catch {
-      // bundle has no markers — play the default loop
-      player.play();
+    const handleLoadError = () => setHasError(true);
+    const handleRenderError = () => setHasError(true);
+
+    const startPlay = () => dotLottie.play();
+
+    dotLottie.addEventListener('loadError', handleLoadError);
+    dotLottie.addEventListener('renderError', handleRenderError);
+
+    if (dotLottie.isLoaded) {
+      startPlay();
+    } else {
+      dotLottie.addEventListener('load', startPlay);
     }
-  }, [state, hasAsset]);
 
-  if (hasAsset !== true) {
+    return () => {
+      dotLottie.removeEventListener('load', startPlay);
+      dotLottie.removeEventListener('loadError', handleLoadError);
+      dotLottie.removeEventListener('renderError', handleRenderError);
+    };
+  }, [dotLottie, hasAsset]);
+
+  if (hasAsset !== true || hasError) {
     return <RoleAvatar role={role} state={state} size={size} />;
   }
-
-  const handleReady = (instance: DotLottie | null) => {
-    playerRef.current = instance;
-  };
 
   return (
     <div
@@ -70,13 +73,12 @@ export function DotLottieRoleAvatar({ role, state = 'idle', size = 52, className
       style={{
         width: size,
         height: size,
-        background: `linear-gradient(135deg, ${def.color}22, ${def.color}11)`,
+        background: backgroundColor,
       }}
       title={`${def.displayName} — ${state}`}
     >
       <DotLottieReact
         src={bundleUrl}
-        autoplay
         loop
         dotLottieRefCallback={handleReady}
         style={{ width: size, height: size }}

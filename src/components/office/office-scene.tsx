@@ -10,22 +10,27 @@ export function OfficeScene({ view }: { view: ProjectViewState }) {
   const currentTasks = useWorkerTaskMap(projectId);
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-olympus-bg">
+    <div className="relative h-full w-full bg-olympus-bg">
       <OfficeFloor />
-      <div className="relative z-10 mx-auto flex h-full w-full max-w-6xl flex-col gap-6 p-8">
+      <div className="relative z-10 mx-auto flex h-full w-full max-w-6xl flex-col gap-6 overflow-y-auto p-8">
         <OfficeHeader />
 
-        <div className="grid grid-cols-4 gap-x-4 gap-y-6 md:grid-cols-5 lg:grid-cols-7">
+        <div className="grid grid-cols-3 gap-x-6 gap-y-8 md:grid-cols-4 lg:grid-cols-6">
           {ROLE_LIST.map((role) => {
             const state = view.roleStates[role.key] ?? 'idle';
             const currentTask = currentTasks.get(role.key as RoleKey) ?? null;
             return (
-              <div key={role.key} className="flex flex-col items-center gap-1">
-                <DotLottieRoleAvatar role={role.key} state={state} size={52} />
-                <div className="text-center text-xs font-medium text-olympus-ink">
+              <div key={role.key} className="flex flex-col items-center gap-2">
+                <DotLottieRoleAvatar 
+                  role={role.key} 
+                  state={state} 
+                  size={100}
+                  bgColor={`linear-gradient(135deg, ${role.color}40, ${role.color}20)`}
+                />
+                <div className="text-center text-sm font-semibold text-olympus-ink">
                   {role.displayName}
                 </div>
-                <div className="text-center text-[10px] text-olympus-dim capitalize">
+                <div className="text-center text-xs text-olympus-dim capitalize">
                   {state}
                 </div>
                 <CurrentTaskLabel title={currentTask?.title ?? null} />

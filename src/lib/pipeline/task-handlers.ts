@@ -9,11 +9,12 @@ import {
   writeArtifact,
   writeState,
 } from '@/lib/workspace/fs';
-import { runAgentTurn } from '@/lib/agents/run';
+import { appendReviewArtifactBlock, runAgentTurn } from '@/lib/agents/run';
 import {
   deriveTicketsIndex,
   readTicketsIndex,
   writeTicketsIndex,
+  writePlaceholderTicketFiles,
 } from '@/lib/workspace/tickets';
 import type { TicketBlock } from '@/lib/schemas/content-blocks';
 import { runBringupRuntimeStage } from '@/lib/workspace/bringup-runtime';
@@ -35,7 +36,7 @@ import {
   readIncidentsIndex,
   updateIncidentEntry,
 } from '@/lib/workspace/incidents';
-import { enqueueTask, type BacklogTask, type TaskKind } from './backlog';
+import { enqueueTask, dropPendingTasks, completeTask, type BacklogTask, type TaskKind } from './backlog';
 import {
   markPhaseApproved,
   shouldPhaseBeReviewed,
@@ -181,6 +182,14 @@ async function handleTechleadPlan(ctx: HandlerContext): Promise<TaskHandlerOutco
     });
     if (index.tickets.length > 0) {
       await writeTicketsIndex(index);
+
+      const newPlaceholders = await writePlaceholderTicketFiles(task.projectId, index);
+      for (const placeholderPath of newPlaceholders) {
+        await appendEvent(
+          emit({ projectId: task.projectId, kind: 'artifact.written', path: placeholderPath, role: 'techlead' }),
+        );
+      }
+
       await appendEvent(
         emit({
           projectId: task.projectId,
@@ -260,8 +269,10 @@ async function handlePhaseReview(ctx: HandlerContext): Promise<TaskHandlerOutcom
   const review = turn.envelope.review;
   const decision = review?.decision ?? 'request-changes';
   const findings = Array.isArray(review?.findings) ? review.findings : [];
+  const evidence = Array.isArray(review?.evidence) ? review.evidence : [];
 
-  await writePhaseReviewArtifact(task.projectId, targetPhase, attempt, decision, findings);
+  const reviewPath = await writePhaseReviewArtifact(task.projectId, targetPhase, attempt, decision, findings, evidence);
+  await appendReviewArtifactBlock(task.projectId, turn.message.id, reviewPath);
 
   await appendEvent(
     emit({
@@ -286,6 +297,12 @@ async function handlePhaseReview(ctx: HandlerContext): Promise<TaskHandlerOutcom
   const nextAttempt = attempt + 1;
   const primary = primaryTaskForPhase(targetPhase);
   if (primary) {
+    dropPendingTasks(task.projectId, {
+      kind: primary.kind,
+      phase: targetPhase,
+      statuses: ['pending'],
+    });
+
     enqueueTask({
       projectId: task.projectId,
       kind: primary.kind,
@@ -463,8 +480,14 @@ async function writePhaseReviewArtifact(
   attempt: number,
   decision: string,
   findings: readonly unknown[],
-): Promise<void> {
+  evidence: readonly string[],
+): Promise<string> {
   const timestamp = new Date().toISOString();
+  const evidenceLines =
+    evidence.length > 0
+      ? evidence.map((line) => `- ${line}`)
+      : ['_none recorded_'];
+
   const body = [
     '---',
     'role: reviewer',
@@ -478,19 +501,19 @@ async function writePhaseReviewArtifact(
     '',
     `**Decision:** ${decision}`,
     '',
+    '## Evidence',
+    '',
+    ...evidenceLines,
+    '',
     '## Findings',
     '',
-    findings.length > 0
-      ? renderFindingsForRole(findings)
-      : '_no findings_',
+    findings.length > 0 ? renderFindingsForRole(findings) : '_no findings_',
     '',
   ].join('\n');
 
-  await writeArtifact(
-    projectId,
-    `reviews/PHASE-${phase}-attempt-${attempt}-review.md`,
-    body,
-  );
+  const reviewPath = `reviews/PHASE-${phase}-attempt-${attempt}-review.md`;
+  await writeArtifact(projectId, reviewPath, body);
+  return reviewPath;
 }
 
 async function haltPhaseForHelp(
@@ -712,10 +735,13 @@ function buildPromptForPhase(
       return [
         'We are in INTAKE. The human just submitted the raw requirement (see REQUIREMENTS.md).',
         'Output:',
-        '- Write an updated REQUIREMENTS.md that keeps the raw requirement and fills the Clarifications section with up to 5 focused, closed-ended questions (no answers yet).',
-        '- Emit one `question` content block per question. Each must have 2-4 option chips, one flagged `isDefault: true`.',
+        '- Write an updated REQUIREMENTS.md that keeps the raw requirement.',
+        '- Ask ONLY crucial clarification questions—ones that cannot be inferred from the requirement or common practice, and that would block the PM or create risk. Aim for 3-5 questions maximum.',
+        '- For questions that are obvious or can be assumed, do NOT ask them; instead, add them to the Assumptions section with sensible defaults.',
+        '- Group questions by theme (e.g. users & auth, data model, key constraints). Each must have 2-4 option chips, one flagged `isDefault: true`, and `allowFreeText: true`.',
+        '- Emit one `question` content block per question.',
         '- Emit an `artifact` block for REQUIREMENTS.md.',
-        '- Set `advance: false`. Do NOT write SPEC.md. Do NOT include all 5 questions unless genuinely needed.',
+        '- Set `advance: false`. Do NOT write SPEC.md.',
         suffix,
       ].join('\n');
     case 'CLARIFY':
@@ -723,8 +749,10 @@ function buildPromptForPhase(
         'We are in CLARIFY. The human just answered (or skipped) one or more clarification questions.',
         'Output:',
         '- Update REQUIREMENTS.md: move answered questions to a "Clarifications" bullet list, move skipped ones to "Assumptions" with a sensible default.',
-        '- If and only if critical ambiguity remains, emit at most 2 new `question` blocks and set `advance: false`.',
-        '- Otherwise emit a `gate` block CLARIFY → SPEC (all checks ok) and set `advance: true`.',
+        '- Re-read the full REQUIREMENTS.md and identify only CRITICAL remaining ambiguities that would block the PM from writing SPEC or create significant project risk.',
+        '- If critical ambiguities remain, emit a `question` block for EACH ONE (ask only crucial ones, aim for 2-3 max per round). Set `advance: false`.',
+        '- Once every critical ambiguity is resolved and REQUIREMENTS.md is complete, emit a `gate` block CLARIFY → SPEC and set `advance: true`.',
+        '- Do NOT ask redundant or obvious questions; those belong in Assumptions, not Questions.',
         suffix,
       ].join('\n');
     case 'SPEC':

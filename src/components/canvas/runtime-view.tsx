@@ -16,6 +16,37 @@ export function RuntimeView({ view }: Props) {
   const projectId = view.state.projectId;
   const runtime = view.runtime;
 
+  const waitForServerReady = useCallback(async (port: number) => {
+    const url = `http://localhost:${port}`;
+    const deadline = Date.now() + 120_000;
+
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(url, {
+          redirect: 'follow',
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (response.ok) return;
+      } catch {
+        // keep polling
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }, []);
+
+  const openBrowserToUrl = useCallback(async (port: number) => {
+    const url = `http://localhost:${port}`;
+    try {
+      await fetch(`/api/projects/${projectId}/runtime`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'open-browser', url }),
+      });
+    } catch {
+      // non-critical failure, continue
+    }
+  }, [projectId]);
+
   const callRuntime = useCallback(
     async (action: RuntimeAction) => {
       setPending({ kind: 'pending', action });
@@ -33,7 +64,17 @@ export function RuntimeView({ view }: Props) {
           });
           return;
         }
-        setPending({ kind: 'idle' });
+
+        if (action === 'start') {
+          const data = (await response.json()) as { port?: number };
+          if (data.port) {
+            await waitForServerReady(data.port);
+            await openBrowserToUrl(data.port);
+          }
+          setPending({ kind: 'idle' });
+        } else {
+          setPending({ kind: 'idle' });
+        }
       } catch (err) {
         setPending({
           kind: 'error',
@@ -41,7 +82,7 @@ export function RuntimeView({ view }: Props) {
         });
       }
     },
-    [projectId],
+    [projectId, waitForServerReady, openBrowserToUrl],
   );
 
   const handleStart = useCallback(() => callRuntime('start'), [callRuntime]);
@@ -64,9 +105,9 @@ export function RuntimeView({ view }: Props) {
         onStop={handleStop}
       />
 
-      <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,2fr)_minmax(0,1fr)]">
-        <RuntimePreview previewUrl={previewUrl} running={runtime.running} />
+      <div className="min-h-0 flex-1 flex flex-col">
         <RuntimeLogPanel logs={runtime.logTail} />
+        {previewUrl && <RuntimeOpenBrowserPrompt previewUrl={previewUrl} />}
       </div>
     </div>
   );
@@ -139,27 +180,19 @@ function RuntimeToolbar({ running, port, pid, previewUrl, pending, onStart, onSt
   );
 }
 
-function RuntimePreview({ previewUrl, running }: { previewUrl: string | null; running: boolean }) {
-  if (!running || !previewUrl) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center border-b border-olympus-border text-olympus-dim">
-        <div className="max-w-md text-center text-sm">
-          <div className="mb-1 font-medium text-olympus-ink/80">No runtime is active.</div>
-          <div>
-            Press <span className="text-olympus-ink">Start</span> to spawn{' '}
-            <code className="text-olympus-ink">pnpm run dev</code> inside the workspace. Logs will stream
-            into the panel below.
-          </div>
-        </div>
-      </div>
-    );
-  }
+function RuntimeOpenBrowserPrompt({ previewUrl }: { previewUrl: string }) {
   return (
-    <iframe
-      title="runtime-preview"
-      src={previewUrl}
-      className="min-h-0 flex-1 border-b border-olympus-border bg-white"
-    />
+    <div className="flex items-center justify-center border-t border-olympus-border bg-olympus-panel px-4 py-3">
+      <span className="text-sm text-olympus-ink/80">Server running at:</span>
+      <a
+        href={previewUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="ml-2 text-olympus-accent hover:underline text-sm"
+      >
+        {previewUrl} ↗
+      </a>
+    </div>
   );
 }
 

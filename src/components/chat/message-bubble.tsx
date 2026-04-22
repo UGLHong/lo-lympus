@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ChevronDown, HelpCircle, Loader2 } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
 import type { Message } from "@/lib/schemas/messages";
 import type {
   ContentBlock,
@@ -748,55 +748,31 @@ function StreamingBlockRenderer({
     block.kind === "question" &&
     "question" in block &&
     block.question &&
-    block.id
+    block.id &&
+    "options" in block &&
+    Array.isArray(block.options) &&
+    block.options.length >= 2
   ) {
-    const blockId = block.id;
+    const questionBlock: QuestionBlock = {
+      kind: "question",
+      id: block.id,
+      question: block.question,
+      options: (block.options as { id?: string; label?: string; isDefault?: boolean }[]).map(
+        (option) => ({
+          id: option.id ?? "",
+          label: option.label ?? "",
+          isDefault: option.isDefault,
+        }),
+      ),
+      allowFreeText: "allowFreeText" in block ? Boolean(block.allowFreeText) : true,
+    };
     return (
-      <div className="rounded-md border border-olympus-accent/30 bg-olympus-accent/5 p-3">
-        <div className="mb-2 flex items-start gap-2">
-          <HelpCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-olympus-accent" />
-          <div className="flex-1">
-            <div className="text-xs uppercase tracking-wider text-olympus-accent">
-              Clarification
-            </div>
-            <div className="mt-0.5 text-sm text-olympus-ink">
-              {block.question}
-            </div>
-          </div>
-        </div>
-        {block.options && block.options.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {block.options.map((option) => (
-              <button
-                key={option.id || ""}
-                type="button"
-                disabled={disabled}
-                onClick={() => {
-                  if (option.label) {
-                    onSelect(blockId, option.id || "", option.label);
-                  }
-                }}
-                className={cn(
-                  "rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-60",
-                  selections[blockId]?.optionId === option.id
-                    ? "border-olympus-accent bg-olympus-accent text-olympus-bg"
-                    : "border-olympus-border bg-olympus-bg/60 text-olympus-ink hover:border-olympus-accent/60 hover:bg-olympus-accent/10",
-                  option.isDefault &&
-                    !selections[blockId]?.optionId &&
-                    "ring-1 ring-olympus-accent/40",
-                )}
-              >
-                {option.label}
-                {option.isDefault && !selections[blockId] && (
-                  <span className="ml-1 text-[10px] text-olympus-dim">
-                    (default)
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      <QuestionCard
+        block={questionBlock}
+        selectedOptionId={selections[questionBlock.id]?.optionId ?? null}
+        disabled={disabled}
+        onSelect={onSelect}
+      />
     );
   }
 

@@ -3,6 +3,7 @@
 import type { ProjectViewState } from '@/lib/client/project-store';
 import { ROLE_LIST } from '@/lib/const/roles';
 import { useProjectNavigation } from '@/components/layout/project-navigation';
+import { DotLottieRoleAvatar } from '@/components/ui/dotlottie-role-avatar';
 
 export function ContextRail({ view }: { view: ProjectViewState }) {
   const { openTab } = useProjectNavigation();
@@ -76,23 +77,20 @@ export function ContextRail({ view }: { view: ProjectViewState }) {
 
         <section>
           <div className="mb-2 text-[11px] uppercase tracking-wider text-olympus-dim">Mini-map</div>
-          <div className="grid grid-cols-4 gap-1.5">
+          <div className="grid grid-cols-4 gap-2">
             {ROLE_LIST.map((role) => {
               const state = view.roleStates[role.key] ?? 'idle';
-              const isActive = state === 'thinking' || state === 'typing' || state === 'reviewing' || state === 'testing';
               return (
                 <div
                   key={role.key}
-                  className="flex flex-col items-center gap-0.5"
+                  className="flex flex-col items-center gap-1"
                   title={`${role.displayName} — ${state}`}
                 >
-                  <span
-                    className="h-3 w-3 rounded-full"
-                    style={{
-                      background: role.color,
-                      opacity: isActive ? 1 : 0.35,
-                      boxShadow: isActive ? `0 0 8px ${role.color}` : 'none',
-                    }}
+                  <DotLottieRoleAvatar 
+                    role={role.key} 
+                    state={state}
+                    size={32}
+                    bgColor={`linear-gradient(135deg, ${role.color}50, ${role.color}30)`}
                   />
                   <span className="text-[9px] text-olympus-dim truncate w-full text-center" title={role.displayName}>
                     {role.key}

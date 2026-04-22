@@ -71,7 +71,7 @@ export function NewProjectForm() {
 
       <div className="flex items-center justify-between">
         <span className="text-xs text-olympus-dim">
-          The Orchestrator will draft <code className="rounded bg-olympus-muted px-1">REQUIREMENTS.md</code> and ask up to 5 clarification questions.
+          The Orchestrator will draft <code className="rounded bg-olympus-muted px-1">REQUIREMENTS.md</code> and ask clarification questions.
         </span>
         <button
           type="submit"

@@ -1,7 +1,7 @@
 'use client';
 
 import { HelpCircle } from 'lucide-react';
-import { useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { QuestionBlock } from '@/lib/schemas/content-blocks';
 import { cn } from '@/lib/utils/cn';
 
@@ -13,12 +13,30 @@ type Props = {
 };
 
 export function QuestionCard({ block, selectedOptionId, disabled, onSelect }: Props) {
+  const [freeformText, setFreeformText] = useState('');
+
+  const showFreeformInput = useMemo(
+    () => block.allowFreeText && (selectedOptionId === null || selectedOptionId === '__freeform__'),
+    [block.allowFreeText, selectedOptionId],
+  );
+
   const handleClick = useCallback(
     (optionId: string, label: string) => {
       if (disabled) return;
+      setFreeformText('');
       onSelect(block.id, optionId, label);
     },
     [block.id, disabled, onSelect],
+  );
+
+  const handleFreeformChange = useCallback(
+    (text: string) => {
+      setFreeformText(text);
+      if (text.trim()) {
+        onSelect(block.id, '__freeform__', text);
+      }
+    },
+    [block.id, onSelect],
   );
 
   return (
@@ -30,18 +48,39 @@ export function QuestionCard({ block, selectedOptionId, disabled, onSelect }: Pr
           <div className="mt-0.5 text-sm text-olympus-ink">{block.question}</div>
         </div>
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {block.options.map((option) => (
-          <QuestionOption
-            key={option.id}
-            label={option.label}
-            isDefault={option.isDefault}
-            isSelected={selectedOptionId === option.id}
-            hasSelection={selectedOptionId !== null}
-            disabled={disabled}
-            onClick={() => handleClick(option.id, option.label)}
-          />
-        ))}
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-1.5">
+          {block.options.map((option) => (
+            <QuestionOption
+              key={option.id}
+              label={option.label}
+              isDefault={option.isDefault}
+              isSelected={selectedOptionId === option.id}
+              hasSelection={selectedOptionId !== null && selectedOptionId !== '__freeform__'}
+              disabled={disabled}
+              onClick={() => handleClick(option.id, option.label)}
+            />
+          ))}
+        </div>
+
+        {block.allowFreeText && (
+          <div className="mt-2">
+            <input
+              type="text"
+              value={freeformText}
+              onChange={(e) => handleFreeformChange(e.target.value)}
+              disabled={disabled}
+              placeholder="Or enter a custom answer..."
+              className={cn(
+                'w-full rounded border px-2 py-1.5 text-xs transition',
+                'border-olympus-border bg-olympus-bg text-olympus-ink placeholder-olympus-dim/50',
+                'focus:border-olympus-accent focus:outline-none focus:ring-1 focus:ring-olympus-accent/30',
+                disabled && 'cursor-not-allowed opacity-60',
+                showFreeformInput && selectedOptionId === '__freeform__' && 'border-olympus-accent bg-olympus-accent/5',
+              )}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

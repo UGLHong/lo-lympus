@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import os from 'node:os';
+import { spawn, type ChildProcess, exec } from 'node:child_process';
 import { emit } from '@/lib/events/bus';
 import { appendEvent } from '@/lib/workspace/fs';
 import { projectDir, softwareHouseDir } from './paths';
@@ -227,4 +228,41 @@ export function getRuntimeStatus(projectId: string): RuntimeStatus {
     startedAt: state.startedAt,
     logPath: state.logPath,
   };
+}
+
+export type OpenBrowserResult = {
+  opened: boolean;
+  reason?: string;
+};
+
+export async function openBrowserToUrl(url: string): Promise<OpenBrowserResult> {
+  const platform = os.platform();
+
+  try {
+    if (platform === 'darwin') {
+      await execPromise(`open "${url}"`);
+    } else if (platform === 'win32') {
+      await execPromise(`start "${url}"`);
+    } else {
+      await execPromise(`xdg-open "${url}"`);
+    }
+    return { opened: true };
+  } catch (err) {
+    return {
+      opened: false,
+      reason: err instanceof Error ? err.message : 'failed to open browser',
+    };
+  }
+}
+
+function execPromise(cmd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    exec(cmd, (error) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
+  });
 }

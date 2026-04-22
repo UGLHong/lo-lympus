@@ -45,7 +45,7 @@ export const ROLES: Record<RoleKey, RoleDef> = {
   'frontend-dev': { key: 'frontend-dev', displayName: 'Frontend Dev', color: '#f472b6', tier: 'coding', initial: 'F' },
   devops: { key: 'devops', displayName: 'DevOps', color: '#fb923c', tier: 'coding', initial: 'D' },
   qa: { key: 'qa', displayName: 'QA Engineer', color: '#eab308', tier: 'vision', initial: 'Q' },
-  reviewer: { key: 'reviewer', displayName: 'Reviewer', color: '#94a3b8', tier: 'fast', initial: 'R' },
+  reviewer: { key: 'reviewer', displayName: 'Reviewer', color: '#94a3b8', tier: 'reasoning', initial: 'R' },
   security: { key: 'security', displayName: 'Security', color: '#ef4444', tier: 'reasoning', initial: 'S' },
   incident: { key: 'incident', displayName: 'Incident Responder', color: '#f97316', tier: 'reasoning', initial: 'I' },
   release: { key: 'release', displayName: 'Release Manager', color: '#14b8a6', tier: 'fast', initial: 'L' },

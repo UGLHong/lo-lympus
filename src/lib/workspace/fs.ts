@@ -104,7 +104,7 @@ ${requirement.trim()}
 
 ## Clarifications
 
-_(pending — Orchestrator will ask ≤ 5 focused questions before producing SPEC.md)_
+_(pending — Orchestrator will ask focused clarification questions before producing SPEC.md)_
 
 ## Assumptions
 

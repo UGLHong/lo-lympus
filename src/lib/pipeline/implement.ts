@@ -1,9 +1,11 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { nanoid } from 'nanoid';
 import type { RoleKey } from '@/lib/const/roles';
 import { emit } from '@/lib/events/bus';
 import {
   appendEvent,
+  appendMessage,
   readArtifact,
   readState,
   writeArtifact,
@@ -16,7 +18,7 @@ import {
 } from '@/lib/workspace/tickets';
 import { writeSourceFile } from '@/lib/workspace/sources';
 import type { TicketsIndexEntry, TicketStatus } from '@/lib/schemas/tickets';
-import { runAgentTurn, type AgentTurnResult } from '@/lib/agents/run';
+import { appendReviewArtifactBlock, runAgentTurn, type AgentTurnResult } from '@/lib/agents/run';
 import {
   validateDevEnvelope,
   validateReviewerEnvelope,
@@ -161,7 +163,7 @@ export async function runReviewForTicketOnce(
   const reviewerTurn = await runAgentTurn({
     projectId,
     role: 'reviewer',
-    userPrompt: buildReviewerPrompt(ticket, paths),
+    userPrompt: buildReviewerPrompt(ticket, paths, attempt),
     includeSpec: true,
     includeArchitecture: true,
     contextExtra: buildReviewerContextExtrasFromSnapshots(
@@ -202,7 +204,10 @@ async function finalizeReview(
   maxAttemptsPerTicket: number,
 ): Promise<TicketOutcome> {
   const review = reviewerTurn.envelope.review as ReviewPayload;
-  const reviewPath = await materializeReviewArtifact(projectId, ticket, review, reviewerTurn.envelope);
+  const reviewPath = await materializeReviewArtifact(projectId, ticket, attempt, review, reviewerTurn.envelope);
+  if (reviewPath) {
+    await appendReviewArtifactBlock(projectId, reviewerTurn.message.id, reviewPath);
+  }
 
   await appendEvent(
     emit({
@@ -331,29 +336,24 @@ async function loadPendingSourcesForReview(
 async function materializeReviewArtifact(
   projectId: string,
   ticket: TicketsIndexEntry,
+  attempt: number,
   review: ReviewPayload,
   envelope: AgentEnvelope,
 ): Promise<string | null> {
-  const canonicalPath = `reviews/PR-${ticket.code}-review.md`;
+  const attemptedPath = `reviews/PR-${ticket.code}-review-attempt-${attempt}.md`;
   const reviewerWrite = envelope.writes.find((w) =>
-    /reviews\/PR-.+-review\.md$/i.test(w.path),
+    new RegExp(`reviews/PR-${ticket.code}-review`, 'i').test(w.path),
   );
 
-  if (
-    reviewerWrite &&
-    path.basename(reviewerWrite.path) === `PR-${ticket.code}-review.md`
-  ) {
-    return canonicalPath;
-  }
-
   const narrative = reviewerWrite?.content ?? envelope.text;
-  const content = renderReviewMarkdown(ticket, review, narrative);
-  await writeArtifact(projectId, canonicalPath, content);
-  return canonicalPath;
+  const content = renderReviewMarkdown(ticket, attempt, review, narrative);
+  await writeArtifact(projectId, attemptedPath, content);
+  return attemptedPath;
 }
 
 function renderReviewMarkdown(
   ticket: TicketsIndexEntry,
+  attempt: number,
   review: ReviewPayload,
   narrative: string,
 ): string {
@@ -371,11 +371,12 @@ function renderReviewMarkdown(
     'role: reviewer',
     'phase: REVIEW',
     `ticket: ${ticket.code}`,
+    `attempt: ${attempt}`,
     `timestamp: ${now}`,
     `status: ${review.decision}`,
     '---',
     '',
-    `# Review for ${ticket.code} — ${ticket.title}`,
+    `# Review for ${ticket.code} — ${ticket.title} (attempt ${attempt})`,
     '',
     narrative ? `${narrative}\n` : '',
     '## Findings',
@@ -444,7 +445,7 @@ export async function haltWithHelpNeeded(
     '',
     '## Suggested next steps',
     '',
-    '- Inspect the latest review under `reviews/PR-<ticket>-review.md`.',
+    '- Inspect the latest review under `reviews/PR-<ticket>-review-attempt-N.md`.',
     '- Correct the failing code in-editor, or `@reviewer` in chat with a corrected spec.',
     '- Unpause the project from the chat header once ready.',
     '',
@@ -454,6 +455,31 @@ export async function haltWithHelpNeeded(
 
   const state = await readState(projectId);
   await writeState({ ...state, paused: true });
+
+  const chatText = [
+    `⚠️ **Help needed — ${ticket.code}: ${ticket.title}**`,
+    '',
+    `The agent exhausted its budget of **${maxAttemptsPerTicket} attempts** without an approved review.`,
+    '',
+    `**Last failure:** ${reason}`,
+    '',
+    'Use the banner at the top of the page to retry, give the agent more attempts, or skip this ticket.',
+  ].join('\n');
+
+  const helpMessage = {
+    id: nanoid(),
+    projectId,
+    threadId: 'master',
+    author: { kind: 'role' as const, role: 'orchestrator' as const },
+    text: chatText,
+    blocks: [] as [],
+    createdAt: now,
+    phase: 'IMPLEMENT',
+    meta: { streaming: false },
+  };
+
+  await appendMessage(helpMessage);
+  await appendEvent(emit({ projectId, kind: 'message.created', message: helpMessage }));
 
   await appendEvent(
     emit({
@@ -534,7 +560,7 @@ function buildDevContextExtras(
   return parts.join('\n');
 }
 
-function buildReviewerPrompt(ticket: TicketsIndexEntry, writtenPaths: string[]): string {
+function buildReviewerPrompt(ticket: TicketsIndexEntry, writtenPaths: string[], attempt: number): string {
   return [
     `Review the implementation of ticket ${ticket.code}: ${ticket.title}.`,
     '',
@@ -542,7 +568,7 @@ function buildReviewerPrompt(ticket: TicketsIndexEntry, writtenPaths: string[]):
     '- `review` (top-level): `{ decision: "approve" | "request-changes" | "block", findings: [...], rerun: boolean, evidence: ["files read", "commands run"] }`.',
     '- `review.evidence[]` MUST be non-empty; rubber-stamp approvals are rejected.',
     '- `review.findings[]` MUST cite file:line when requesting changes.',
-    '- `writes[]`: optional; you may persist the narrative to `reviews/PR-<ticket>-review.md`.',
+    `- \`writes[]\`: optional; you may persist the narrative to \`reviews/PR-${ticket.code}-review-attempt-${attempt}.md\`.`,
     '- `ticketCode`: set to the ticket under review.',
     '- `text`: 1–3 sentences summarising the outcome.',
     '- Set `advance: false`.',

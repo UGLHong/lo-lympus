@@ -20,7 +20,7 @@ import {
   writeState,
 } from '@/lib/workspace/fs';
 import {
-  pickNextReadyForDev,
+  pickAllReadyForDev,
   readTicketsIndex,
 } from '@/lib/workspace/tickets';
 import { readIncidentsIndex } from '@/lib/workspace/incidents';
@@ -610,36 +610,23 @@ async function seedImplementTasks(projectId: string): Promise<void> {
   const index = await readTicketsIndex(projectId);
   if (!index) return;
 
-  // dev seeds — every ticket ready to pick up gets a ticket-dev task. The
-  // backlog's dedupe guard means re-calling this every supervisor tick is
-  // safe.
-  while (true) {
-    const nextTicket = pickNextReadyForDev(index);
-    if (!nextTicket) break;
+  // seed a ticket-dev task for every ticket that is ready right now.
+  // the backlog's dedupe guard makes this safe to call on every supervisor tick.
+  for (const ticket of pickAllReadyForDev(index)) {
+    const alreadyLive = hasLiveTaskWithPayload(projectId, 'ticket-dev', 'ticketCode', ticket.code);
+    if (alreadyLive) continue;
 
-    const role: RoleKey = isDevRole(nextTicket.assigneeRole)
-      ? nextTicket.assigneeRole
-      : inferDevRoleFromTitle(nextTicket.title);
-
-    const alreadyLive = hasLiveTaskWithPayload(
-      projectId,
-      'ticket-dev',
-      'ticketCode',
-      nextTicket.code,
-    );
-    if (alreadyLive) break;
+    const role: RoleKey = isDevRole(ticket.assigneeRole)
+      ? ticket.assigneeRole
+      : inferDevRoleFromTitle(ticket.title);
 
     enqueueTask({
       projectId,
       phase: 'IMPLEMENT',
       kind: 'ticket-dev',
       role,
-      payload: { ticketCode: nextTicket.code },
+      payload: { ticketCode: ticket.code },
     });
-    // mutate the local index snapshot so pickNext… walks past this ticket
-    // on the next iteration without another disk read.
-    const localEntry = index.tickets.find((t) => t.code === nextTicket.code);
-    if (localEntry) localEntry.status = 'in-progress';
   }
 
   // review seeds — any ticket sitting in `review` without a live reviewer

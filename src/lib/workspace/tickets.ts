@@ -108,6 +108,49 @@ export async function writeTicketsIndex(index: TicketsIndex): Promise<void> {
   );
 }
 
+function buildPlaceholderContent(entry: TicketsIndexEntry): string {
+  const dependsOnYaml =
+    entry.dependsOn.length > 0
+      ? `depends_on:\n${entry.dependsOn.map((dep) => `  - ${dep}`).join('\n')}`
+      : 'depends_on: []';
+
+  return [
+    '---',
+    'role: techlead',
+    'phase: PLAN',
+    `ticket: ${entry.code}`,
+    `assignee: ${entry.assigneeRole ?? 'tbd'}`,
+    dependsOnYaml,
+    'status: pending-review',
+    '---',
+    '',
+    `# ${entry.code}: ${entry.title}`,
+    '',
+    '_Full ticket spec pending Tech Lead plan approval._',
+  ].join('\n');
+}
+
+// write a placeholder .md for each index entry that has no file on disk yet.
+// returns relative paths (relative to .software-house/) of newly created files.
+export async function writePlaceholderTicketFiles(
+  projectId: string,
+  index: TicketsIndex,
+): Promise<string[]> {
+  const created: string[] = [];
+
+  for (const entry of index.tickets) {
+    const absPath = path.join(softwareHouseDir(projectId), entry.path);
+    try {
+      await fs.access(absPath);
+    } catch {
+      await atomicWrite(absPath, buildPlaceholderContent(entry));
+      created.push(entry.path);
+    }
+  }
+
+  return created;
+}
+
 type DeriveOptions = {
   ticketBlocks?: TicketBlock[];
   previous?: TicketsIndex | null;
@@ -322,6 +365,25 @@ export function pickNextPendingReview(index: TicketsIndex): TicketsIndexEntry | 
   const pending = index.tickets.filter((t) => t.status === 'review');
   if (pending.length === 0) return null;
   return pending.slice().sort((a, b) => a.code.localeCompare(b.code))[0] ?? null;
+}
+
+/**
+ * All tickets that can receive a developer turn: `todo` or `changes-requested`,
+ * dependencies satisfied. Sorted: `changes-requested` first, then by code.
+ */
+export function pickAllReadyForDev(index: TicketsIndex): TicketsIndexEntry[] {
+  const doneCodes = doneCodeSet(index);
+
+  return index.tickets
+    .filter((ticket) => {
+      if (ticket.status !== 'todo' && ticket.status !== 'changes-requested') return false;
+      return depsSatisfied(ticket, doneCodes);
+    })
+    .sort((a, b) => {
+      if (a.status === 'changes-requested' && b.status !== 'changes-requested') return -1;
+      if (a.status !== 'changes-requested' && b.status === 'changes-requested') return 1;
+      return a.code.localeCompare(b.code);
+    });
 }
 
 /**

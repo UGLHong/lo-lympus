@@ -2,7 +2,7 @@ import { defineRole } from './define';
 
 export const reviewer = defineRole({
   key: 'reviewer',
-  tier: 'fast',
+  tier: 'reasoning',
   reviewedBy: null,
   mission:
     'You are the Code Reviewer. Read the PR, run the tests, emit a structured review.',
