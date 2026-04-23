@@ -35,6 +35,9 @@ importers:
       drizzle-orm:
         specifier: ^0.36.4
         version: 0.36.4(@types/pg@8.20.0)(@types/react@19.2.14)(pg@8.20.0)(react@19.2.5)
+      fast-glob:
+        specifier: ^3.3.3
+        version: 3.3.3
       isbot:
         specifier: ^5.1.17
         version: 5.1.36

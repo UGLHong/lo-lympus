@@ -985,45 +985,49 @@ function extractReview(task: KanbanTask): ReviewSummary | null {
   };
 }
 
-function buildReviewTrail(root: KanbanTask, allTasks: KanbanTask[]): KanbanTask[] {
-  const byId = new Map(allTasks.map((task) => [task.id, task]));
-  const ancestors: KanbanTask[] = [];
-  const seen = new Set<string>([root.id]);
-  let cursor: KanbanTask | undefined = root;
-  while (cursor?.parentTaskId && !seen.has(cursor.parentTaskId)) {
-    const parent = byId.get(cursor.parentTaskId);
+// the review trail for a task is exactly its self-healing chain: the original
+// non-reviewer iteration-0 task at the top, every reviewer pass that fired on
+// it, every fix iteration those reviewers queued, and the reviewers of those
+// fixes. delegation hand-offs (pm → architect, architect → techlead, techlead
+// → coders) share parentTaskId for dependency gating but are NOT part of the
+// same self-healing chain, so they must not leak into the trail.
+function buildReviewTrail(task: KanbanTask, allTasks: KanbanTask[]): KanbanTask[] {
+  const byId = new Map(allTasks.map((entry) => [entry.id, entry]));
+
+  // walk up via review-chain links only (reviewer → reviewed, fix iteration →
+  // its reviewer) until we hit the original non-reviewer iteration-0 anchor.
+  let anchor = task;
+  const walkedUp = new Set<string>([task.id]);
+  while (anchor.role === 'reviewer' || anchor.iteration > 0) {
+    if (!anchor.parentTaskId || walkedUp.has(anchor.parentTaskId)) break;
+    const parent = byId.get(anchor.parentTaskId);
     if (!parent) break;
-    seen.add(parent.id);
-    ancestors.unshift(parent);
-    cursor = parent;
+    walkedUp.add(parent.id);
+    anchor = parent;
   }
 
-  const anchor = ancestors[0] ?? root;
-  const descendants: KanbanTask[] = [];
+  // walk down from the anchor including only review-chain descendants:
+  // reviewer tasks (regardless of iteration) and fix iterations that chain
+  // back through reviewers. siblings spawned by delegation (non-reviewer
+  // iteration-0 children) are excluded.
+  const included = new Set<string>([anchor.id]);
+  const chain: KanbanTask[] = [anchor];
   const queue: string[] = [anchor.id];
-  const visited = new Set<string>();
   while (queue.length > 0) {
     const parentId = queue.shift()!;
-    if (visited.has(parentId)) continue;
-    visited.add(parentId);
-    for (const candidate of allTasks) {
-      if (candidate.parentTaskId === parentId) {
-        descendants.push(candidate);
-        queue.push(candidate.id);
-      }
+    const children = allTasks
+      .filter((candidate) => candidate.parentTaskId === parentId)
+      .filter((candidate) => candidate.role === 'reviewer' || candidate.iteration > 0);
+    children.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const child of children) {
+      if (included.has(child.id)) continue;
+      included.add(child.id);
+      chain.push(child);
+      queue.push(child.id);
     }
   }
-  descendants.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
-  const chain: KanbanTask[] = [anchor, ...descendants];
-  const deduped: KanbanTask[] = [];
-  const used = new Set<string>();
-  for (const entry of chain) {
-    if (used.has(entry.id)) continue;
-    used.add(entry.id);
-    deduped.push(entry);
-  }
-  return deduped;
+  return chain;
 }
 
 function TaskDetailPane({

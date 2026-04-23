@@ -21,16 +21,22 @@ export function buildRuntimeTool(ctx: ToolCtx) {
   return createTool({
     id: 'runtime',
     description: [
-      'Control the running generated product.',
-      '"start" spawns a long-running dev server (skips if one is already up and matches).',
-      '"restart" force-stops any existing dev server (including orphan child processes) then starts a fresh one — use this after fixing env vars or swapping the run command.',
-      '"stop" kills it.',
-      '"status" returns the current state.',
-      'Logs are streamed to the Terminal pane.',
-    ].join(' '),
+      'Control the generated project\'s long-running dev server.',
+      '',
+      'Actions:',
+      '- `status` — peek at the current runtime (returns status/pid/port). Safe, read-only.',
+      '- `start`  — spawn a dev server if none is running. No-op when one is already up with the same command.',
+      '- `restart` — force-stop any existing process (including orphaned children) then start fresh. Use after fixing env vars, installing deps, or changing the run command.',
+      '- `stop`   — terminate the running server.',
+      '',
+      'Logs are streamed live to the Terminal pane. `command` defaults to `pnpm dev` — override with the command the project actually uses (e.g. `npm run dev`, `docker compose up`, `python manage.py runserver`). Working directory is the project workspace root.',
+    ].join('\n'),
     inputSchema: z.object({
       action: z.enum(['start', 'stop', 'status', 'restart']),
-      command: z.string().optional().describe('Shell command for start/restart. Defaults to "pnpm dev".'),
+      command: z
+        .string()
+        .optional()
+        .describe('Shell command for start/restart (run from workspace root). Defaults to "pnpm dev".'),
     }),
     outputSchema: z.object({
       ok: z.boolean(),

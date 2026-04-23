@@ -46,12 +46,16 @@ export function buildAskClarifyingQuestionsTool(ctx: ToolCtx) {
   return createTool({
     id: 'ask_clarifying_questions',
     description: [
-      'Batch-ask a set of clarifying questions before starting planning work.',
-      'For non-CTO roles the questions are first routed to the CTO, who tries to answer them using the spec, plan, and generated artifacts and only escalates to the actual human when it cannot conclude.',
-      'Prefer this over `request_human_input` when you have multiple ambiguities — asking everything at once is cheaper than a drip-feed.',
-      'Every question MUST include a `fallbackAssumption` so the role can proceed if no answer arrives within the configured timeout.',
-      'The task is parked in `blocked-needs-input` until the answer comes back. If the clarification timeout elapses the watcher resumes the task with an instruction to commit to the fallback assumptions.',
-    ].join(' '),
+      'Batch-ask 1–8 clarifying questions before committing to a planning decision. Preferred over `request_human_input` whenever you have multiple ambiguities — asking everything at once is cheaper than a drip-feed.',
+      '',
+      'Every question MUST include a `fallbackAssumption` — the specific, actionable path you will take if no answer arrives. If the clarification timeout elapses the watcher resumes your task with an instruction to commit to the fallbacks, so make them good defaults.',
+      '',
+      'Routing:',
+      '- Non-CTO roles: the bundle is filtered through the CTO, who tries to answer with the spec/plan/board before escalating to the human.',
+      '- CTO role: escalates directly to the human overseer.',
+      '',
+      'While waiting, the task is parked in `blocked-needs-input`.',
+    ].join('\n'),
     inputSchema: z.object({
       summary: z
         .string()

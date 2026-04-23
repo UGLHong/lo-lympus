@@ -18,11 +18,16 @@ export function buildAnswerTaskQuestionTool(ctx: ToolCtx) {
   return createTool({
     id: 'answer_task_question',
     description: [
-      'CTO-only. Resolve another agent\'s blocked question by providing an answer on behalf of the human.',
-      'Use this after investigating the spec, plan, generated code, and task history when you can confidently conclude the answer (low-level assumptions are allowed if they do not contradict any observed fact).',
-      'The blocked task is unblocked and your answer is injected into its memory thread as if the human had replied.',
-      'If you cannot confidently answer, call `request_human_input` instead to escalate to the actual human.',
-    ].join(' '),
+      'CTO-only. Resolve another agent\'s blocked-needs-input question on behalf of the human.',
+      '',
+      'Use ONLY after you have actually investigated the spec, plan, generated code, and task history — not as a guess. Low-level assumptions are allowed as long as they do not contradict any observed fact.',
+      '',
+      'Effect:',
+      '- Target task transitions out of `blocked-needs-input` and its current run is aborted so the next attempt picks up with your answer injected into the memory thread as if the human had replied.',
+      '- A dedicated `cto-resolution` chat message is posted on the target task so humans can audit the decision.',
+      '',
+      'If you cannot confidently conclude, call `request_human_input` on YOUR OWN task instead so the overseer is pulled in.',
+    ].join('\n'),
     inputSchema: z.object({
       taskId: z.string().describe('The blocked task id (uuid string) to resolve (the original question asker, not your own task).'),
       answer: z

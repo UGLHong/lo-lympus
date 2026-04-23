@@ -54,12 +54,19 @@ export function buildCreateTaskTool(ctx: ToolCtx) {
   return createTool({
     id: 'create_task',
     description: [
-      'Create a new task in this project and queue it for the named role.',
-      `You are ${ctx.role} — you may only delegate to: ${allowedSummary}.`,
-      'Use after reading the existing documentation and task list to identify concrete follow-up work that is not yet covered (e.g. a missing backend endpoint, a split of an oversized chunk, a frontend view the plan forgot).',
-      'Provide a concrete `description` with target file paths, acceptance criteria, and any context the assignee needs — assume they only read what you wrote.',
-      'Pass `dependsOn` with task ids (not titles) for work that must finish before this one can start.',
-    ].join(' '),
+      'Delegate work to another role by filing a new task on the project board.',
+      '',
+      `You are **${ctx.role}** — you may only delegate to: ${allowedSummary}.`,
+      '',
+      'When to use:',
+      '- After reading the existing docs (REQUIREMENTS/ARCHITECTURE/PLAN) and the current board, to file concrete follow-up work that is not yet represented.',
+      '- To split an oversized chunk into tighter, independently-reviewable pieces.',
+      '',
+      'Guidelines:',
+      '- `title` should be actionable ("Implement TodoItem component"), not vague ("work on frontend").',
+      '- `description` must stand on its own — the assignee only reads what you wrote. Include: target file paths, acceptance criteria, any reference to existing code / spec sections, and any constraints.',
+      '- `dependsOn` takes task **ids (uuids)**, NOT titles. Your own task id is auto-added so the child never starts before you are approved.',
+    ].join('\n'),
     inputSchema: z.object({
       role: z
         .enum(DELEGATABLE_ROLES as unknown as [Role, ...Role[]])

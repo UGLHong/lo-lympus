@@ -21,8 +21,6 @@ export function buildToolsForRole(ctx: ToolBuildCtx): Record<string, unknown> {
   // reviewer is a pure quality gate. it never interacts with the human
   // directly — any ambiguity or missing info becomes an incident in the
   // verdict JSON, which queues a fix task back to the original employee.
-  // that employee (or their task creator) is responsible for escalating
-  // further if human input is truly required.
   const isReviewer = ctx.role === 'reviewer';
 
   const base: Record<string, unknown> = {
@@ -37,12 +35,21 @@ export function buildToolsForRole(ctx: ToolBuildCtx): Record<string, unknown> {
     base.ask_clarifying_questions = buildAskClarifyingQuestionsTool(ctx);
   }
 
+  // every role that produces file artifacts (code, docs, Dockerfiles, configs)
+  // gets stream_code so its output lands in Follow Mode for humans to watch
+  // live. reviewer and cto are excluded — reviewer does not write artifacts,
+  // cto must never write code (delegate via create_task instead).
+  const writesArtifacts =
+    ctx.role !== 'reviewer' && ctx.role !== 'cto' && ctx.role !== 'qa';
+  if (writesArtifacts) {
+    base.stream_code = buildStreamCodeTool(ctx);
+  }
+
   switch (ctx.role) {
     case 'backend-dev':
     case 'frontend-dev':
       return {
         ...base,
-        stream_code: buildStreamCodeTool(ctx),
         database_query: buildDatabaseQueryTool(ctx),
       };
     case 'devops':
@@ -61,11 +68,10 @@ export function buildToolsForRole(ctx: ToolBuildCtx): Record<string, unknown> {
         playwright_browser: buildPlaywrightBrowserTool(ctx),
         runtime: buildRuntimeTool(ctx),
       };
-    // CTO has access to every inspection tool in the house plus the exclusive
-    // answer_task_question tool so it can resolve other agents' blocked-needs-input
-    // questions on behalf of the human after investigating. stream_code is
-    // intentionally omitted — the CTO must never write code directly and must
-    // delegate all implementation work to the appropriate role via a new task.
+    // CTO is the board's orchestrator + HITL filter. it gets every inspection
+    // tool plus the exclusive answer_task_question. stream_code is
+    // intentionally omitted — CTO must never write code directly and must
+    // delegate all implementation work via create_task.
     case 'cto':
       return {
         ...base,
@@ -81,34 +87,31 @@ export function buildToolsForRole(ctx: ToolBuildCtx): Record<string, unknown> {
     case 'release':
       return base;
     // techlead owns the work breakdown. after reading REQUIREMENTS / ARCHITECTURE
-    // / PLAN and the current task list, it can inspect the project via
-    // database_query and file off additional coding tasks via create_task when
-    // the original breakdown missed scope or needs to be split further.
+    // / PLAN and the current task list, it inspects the board via
+    // database_query and files delegation tickets via create_task.
     case 'techlead':
       return {
         ...base,
         database_query: buildDatabaseQueryTool(ctx),
         create_task: buildCreateTaskTool(ctx),
       };
-    // pm is the entry point of the planning chain. on both kickoff and
-    // mid-stream updates it writes REQUIREMENTS.md and hands off to architect
-    // via create_task. it needs database_query to inspect the current board
-    // so it can distinguish kickoff vs update mode and avoid duplicate
-    // architect hand-offs when responding to a rapid burst of overseer asks.
+    // pm is the entry point of the planning chain. writes REQUIREMENTS.md and
+    // hands off to architect. database_query lets it peek at the current board
+    // before filing a duplicate architect task when a burst of overseer asks
+    // arrive back-to-back.
     case 'pm':
       return {
         ...base,
         database_query: buildDatabaseQueryTool(ctx),
         create_task: buildCreateTaskTool(ctx),
       };
-    // architect participates in the trickle-down chain: when PM/CTO queues an
-    // architecture update, it must be able to hand off the next planning step
-    // to techlead so the chain keeps moving without human involvement. the
-    // per-creator allowlist inside create_task keeps it routing only to the
-    // next planning layer (techlead / writer), never to coders.
+    // architect writes ARCHITECTURE.md and hands off to techlead. database_query
+    // lets it peek at the current ticket shape so its hand-off description
+    // references existing ticket ids rather than titles.
     case 'architect':
       return {
         ...base,
+        database_query: buildDatabaseQueryTool(ctx),
         create_task: buildCreateTaskTool(ctx),
       };
   }

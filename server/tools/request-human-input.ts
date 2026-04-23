@@ -21,8 +21,17 @@ interface ToolCtx {
 export function buildRequestHumanInputTool(ctx: ToolCtx) {
   return createTool({
     id: 'request_human_input',
-    description:
-      'Block the current task and ask a question that needs authoritative input. For non-CTO roles this is filtered by the CTO first — the CTO tries to answer using the spec, plan, and generated artifacts, and only escalates to the actual human when it cannot conclude. For the CTO role this escalates directly to the human overseer. Pass `options` when the answer is one of a small fixed set so the responder sees clickable choices; omit `options` for freeform input.',
+    description: [
+      'Block the current task on a question that needs authoritative input.',
+      '',
+      'Routing:',
+      '- Non-CTO roles: the question is filtered through the CTO first. The CTO investigates the spec/plan/code and either answers on your behalf (via `answer_task_question`) or escalates to the human.',
+      '- CTO role: escalates directly to the human overseer (use sparingly — exhaust the docs / board first).',
+      '',
+      'Prefer `ask_clarifying_questions` when you have multiple ambiguities — batching is cheaper than a drip-feed of single questions.',
+      '',
+      'Pass `options` (2–8 short labels) when the answer is one of a fixed set so the responder sees clickable choices. Omit for freeform input.',
+    ].join('\n'),
     inputSchema: z.object({
       question: z.string().min(1).describe('A single, specific question for the human.'),
       context: z.string().optional().describe('Optional context, e.g. what you tried.'),

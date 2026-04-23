@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { createTool } from '@mastra/core/tools';
@@ -15,19 +15,35 @@ interface ToolCtx {
   taskId?: string;
 }
 
+const DESCRIPTION = [
+  'Write a file to the workspace while streaming its content chunk-by-chunk into the editor so humans can watch you work via Follow Mode.',
+  '',
+  'When to use:',
+  '- Creating or fully rewriting source code, markdown docs (REQUIREMENTS/ARCHITECTURE/PLAN), or any file where showing the diff live is valuable.',
+  '- Preferred over `file_system.write` for anything a human might want to watch land in the editor.',
+  '',
+  'Semantics:',
+  '- Provide the FULL final contents — this is an overwrite, not a patch.',
+  '- Parent directories are auto-created; never pre-check existence, never ask the human to create directories, just call this tool.',
+  '- Paths are relative to the workspace root, never absolute, never contain "..".',
+].join('\n');
+
 export function buildStreamCodeTool(ctx: ToolCtx) {
   return createTool({
     id: 'stream_code',
-    description:
-      'Write a file to the workspace while streaming its content to observers. Use this for any code generation so humans can watch via Follow Mode.',
+    description: DESCRIPTION,
     inputSchema: z.object({
       path: z.string().describe('Target path relative to workspace root.'),
-      contents: z.string().describe('Full file contents to write.'),
-      language: z.string().optional().describe('Monaco language id, e.g. "typescript".'),
+      contents: z.string().describe('Full final file contents (overwrite; not a patch).'),
+      language: z
+        .string()
+        .optional()
+        .describe('Monaco language id override (e.g. "typescript"). Auto-detected from the extension otherwise.'),
     }),
     outputSchema: z.object({
       ok: z.boolean(),
       bytes: z.number().optional(),
+      created: z.boolean().optional(),
       error: z.string().optional(),
     }),
     execute: async (input) => {
@@ -35,12 +51,13 @@ export function buildStreamCodeTool(ctx: ToolCtx) {
       try {
         const full = resolveInsideProject(ctx.projectSlug, input.path);
         await mkdir(dirname(full), { recursive: true });
+        const existed = await access(full).then(() => true).catch(() => false);
 
         emitToolLog(ctx, {
           kind: 'code',
           action: 'stream.start',
           path: input.path,
-          summary: `${input.contents.length} chars`,
+          summary: `${existed ? 'overwrite' : 'create'} · ${input.contents.length} chars`,
         });
 
         emit({
@@ -97,7 +114,7 @@ export function buildStreamCodeTool(ctx: ToolCtx) {
           summary: `${input.contents.length} bytes written`,
         });
 
-        return { ok: true, bytes: input.contents.length };
+        return { ok: true, bytes: input.contents.length, created: !existed };
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         emitToolLog(ctx, {
