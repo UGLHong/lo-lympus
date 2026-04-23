@@ -1394,71 +1394,139 @@ async function ensureTrickleDownHandoff(args: {
   });
 }
 
-// roles the techlead MUST fan out into via create_task once PLAN.md is
-// written. used to detect the silent failure where the techlead finishes with
-// only a PLAN.md on disk and no delegated tickets on the board — which
-// effectively stalls the project because there is nobody scheduled to write
-// any actual code.
-const TECHLEAD_IMPLEMENTATION_ROLES: ReadonlySet<Role> = new Set<Role>([
+// implementation roles the techlead is expected to delegate to. used to count
+// coverage when validating a completed techlead pass — we require at least
+// one impl-role ticket (backend-dev / frontend-dev / security / release), two
+// devops tickets, and — when TESTING: required — one tester ticket.
+const TECHLEAD_IMPL_CODE_ROLES: ReadonlySet<Role> = new Set<Role>([
   'backend-dev',
   'frontend-dev',
-  'devops',
-  'tester',
-  'qa',
-  'writer',
   'security',
   'release',
 ]);
 
-// when the techlead completes without filing ANY implementation ticket, spawn
-// a pointed follow-up targeting the techlead itself. the upstream task already
-// produced PLAN.md via stream_code, so we do NOT re-run the planning step —
-// the follow-up focuses purely on converting the existing plan into tickets
-// via create_task. parented on the original techlead task so the kanban shows
-// the retry chain explicitly.
+interface TechleadCoverageGap {
+  missingImplementation: boolean;
+  devopsShortfall: number;
+  missingTester: boolean;
+  missingWriter: boolean;
+}
+
+function summarizeMissing(gap: TechleadCoverageGap, testingRequired: boolean): string[] {
+  const missing: string[] = [];
+  if (gap.missingImplementation) {
+    missing.push('no backend-dev / frontend-dev / security / release ticket exists (PHASE 1)');
+  }
+  if (gap.devopsShortfall > 0) {
+    missing.push(
+      `${gap.devopsShortfall} devops ticket(s) missing (PHASE 2 requires exactly 2: "Set Up Local Environment & README" and "Set Up Deployment & Extend README")`,
+    );
+  }
+  if (gap.missingTester && testingRequired) {
+    missing.push('no tester ticket exists but the upstream TESTING signal is `required` (PHASE 3)');
+  }
+  return missing;
+}
+
+// evaluates whether the techlead's completed pass actually delegated enough
+// work to cover PLAN.md's mandatory ticket set. coverage is counted against
+// the prompt contract:
+//   PHASE 1 — at least one backend-dev / frontend-dev / security / release
+//   PHASE 2 — exactly two devops tickets
+//   PHASE 3 — exactly one tester ticket when TESTING: required
+// on mid-stream replan runs (iteration > 0 or title starts with "File
+// implementation tickets"), only PHASE 1 is enforced — the devops / tester
+// tickets may already exist on the board from an earlier techlead pass.
+function evaluateTechleadCoverage(
+  task: Task,
+  children: Task[],
+  isInitialBreakdown: boolean,
+): TechleadCoverageGap | null {
+  const implCount = children.filter((child) => TECHLEAD_IMPL_CODE_ROLES.has(child.role as Role)).length;
+  const devopsCount = children.filter((child) => child.role === 'devops').length;
+  const testerCount = children.filter((child) => child.role === 'tester').length;
+
+  const missingImplementation = implCount === 0;
+  const devopsShortfall = isInitialBreakdown ? Math.max(0, 2 - devopsCount) : 0;
+  const testingRequired = (extractTestingSignal(task.description) ?? 'required') === 'required';
+  const missingTester = isInitialBreakdown && testingRequired && testerCount === 0;
+
+  if (!missingImplementation && devopsShortfall === 0 && !missingTester) return null;
+  return {
+    missingImplementation,
+    devopsShortfall,
+    missingTester,
+    missingWriter: false,
+  };
+}
+
+// when the techlead completes without filing the full mandatory ticket set,
+// spawn a pointed follow-up targeting the techlead itself. the upstream task
+// already produced PLAN.md via stream_code, so we do NOT re-run the planning
+// step — the follow-up focuses purely on converting the existing plan into
+// tickets via create_task. parented on the original techlead task so the
+// kanban shows the retry chain explicitly and dependsOn gates it behind the
+// reviewer approval of the parent.
 async function ensureTechleadFannedOut(args: { role: Role; task: Task }): Promise<void> {
   const { role, task } = args;
   if (role !== 'techlead') return;
 
-  const children = await listChildTasks(task.id);
-  const alreadyFiled = children.some((child) =>
-    TECHLEAD_IMPLEMENTATION_ROLES.has(child.role as Role),
-  );
-  if (alreadyFiled) return;
+  // a rescue task is itself a techlead run; don't cascade rescues off it.
+  if (task.title.startsWith('File implementation tickets')) return;
 
-  // if the retry was already spawned (same parent, same role, title marker),
-  // don't keep spawning — one rescue per stall, and the reviewer will catch a
-  // second silent failure.
+  const children = await listChildTasks(task.id);
   const alreadyRescued = children.some(
     (child) => child.role === 'techlead' && child.title.startsWith('File implementation tickets'),
   );
   if (alreadyRescued) return;
+
+  const isInitialBreakdown = !/^replan/i.test(task.title.trim());
+  const gap = evaluateTechleadCoverage(task, children, isInitialBreakdown);
+  if (!gap) return;
+
+  const testingSignal = extractTestingSignal(task.description) ?? 'required';
+  const testingRequired = testingSignal === 'required';
+  const missing = summarizeMissing(gap, testingRequired);
+  const implCount = children.filter((child) => TECHLEAD_IMPL_CODE_ROLES.has(child.role as Role)).length;
+  const devopsCount = children.filter((child) => child.role === 'devops').length;
+  const testerCount = children.filter((child) => child.role === 'tester').length;
 
   const subject = stripFixPrefix(task.title)
     .replace(/^(plan implementation for|replan for)[:\s]*/i, '')
     .trim() || 'the project';
 
   const description = [
-    'Forwarded automatically by the runtime because the techlead previous pass wrote `.software-house/PLAN.md` but did NOT file any implementation / devops / tester / writer ticket — the project has no work scheduled.',
+    'Forwarded automatically by the runtime because the previous techlead pass wrote `.software-house/PLAN.md` but filed an INCOMPLETE set of delegation tickets — the project cannot progress without the missing tickets.',
+    '',
+    '## Gaps detected on the board',
+    ...missing.map((line) => `- ${line}`),
+    '',
+    '## Tickets already on the board (do NOT refile these)',
+    `- ${implCount} implementation-code ticket(s) (backend-dev / frontend-dev / security / release)`,
+    `- ${devopsCount} devops ticket(s)`,
+    `- ${testerCount} tester ticket(s)`,
     '',
     '## Do THIS in this run (no more planning)',
-    '1. Read the existing `.software-house/PLAN.md` end-to-end. Do NOT rewrite it; it already exists on disk and a reviewer pass will validate it.',
-    '2. Read `.software-house/REQUIREMENTS.md` + `.software-house/ARCHITECTURE.md` only if a specific detail is missing from PLAN.md.',
-    '3. Run `database_query` against `olympus_tasks` to list everything already on the board so you do not duplicate tickets.',
-    '4. For EVERY Work Breakdown chunk in PLAN.md that is not already on the board, call `create_task` with the correct target role (`backend-dev` / `frontend-dev` / `devops` / `tester` / `writer` / `security` / `release`). Copy the file paths, acceptance tests, and risks from PLAN.md into the ticket description verbatim.',
-    '5. Sequence with `dependsOn` exactly as PLAN.md describes (devops phase 1 after every phase-1 ticket, devops phase 2 after phase-1 tickets AND devops phase 1, tester ticket after every phase-1 and phase-2 ticket).',
-    '6. Honour the upstream TESTING signal: file exactly one `tester` ticket when it is `required`; file none when it is `skip`.',
+    '1. Read the existing `.software-house/PLAN.md` end-to-end. Do NOT rewrite it; a reviewer will validate the doc itself.',
+    '2. Only fall back to REQUIREMENTS.md / ARCHITECTURE.md if a specific detail is missing from PLAN.md.',
+    '3. Run `database_query` against `olympus_tasks WHERE project_id = <projectId>` to see what is already queued before filing anything new — do not duplicate existing tickets.',
+    '4. For EVERY Work Breakdown chunk in PLAN.md that is NOT already represented on the board, call `create_task` with the correct target role. Copy the file paths, acceptance tests, and risks from PLAN.md into the ticket description verbatim.',
+    '5. File any missing PHASE 2 devops tickets (exactly two: "Set Up Local Environment & README" then "Set Up Deployment & Extend README") with the devops-phase-1 ticket depending on every PHASE 1 implementation ticket id, and devops-phase-2 depending on phase-1 AND devops-phase-1.',
+    testingRequired
+      ? '6. File exactly one `tester` ticket titled "Manual UI test: <scope>" with `dependsOn` listing every PHASE 1 and PHASE 2 ticket id. The upstream TESTING signal is `required`.'
+      : '6. Do NOT file a tester ticket. Upstream TESTING signal is `skip`.',
+    '7. Sequence with `dependsOn` by task id (not title) exactly as PLAN.md and the phase rules above describe.',
     '',
     '## Absolute rules',
-    '- Do NOT call `stream_code` in this task. PLAN.md is already on disk and this run is purely a delegation pass.',
-    '- Do NOT finish this task until `create_task` has been called at least once for a concrete implementation / devops role. Finishing without any ticket filed is the exact failure we are recovering from.',
-    '- If you genuinely believe the whole plan is already on the board, reply with a short summary listing each existing ticket id by role so the reviewer can confirm.',
+    '- Do NOT call `stream_code` in this run. PLAN.md is already on disk.',
+    '- Do NOT finish this task until every gap above is closed with a `create_task` call.',
+    '- If a gap looks wrong (e.g. you genuinely already filed the missing ticket and the runtime miscounted), reply with a short summary listing each existing ticket id by role so the reviewer can confirm.',
     '',
-    `## Context from the stalled techlead run`,
+    '## Context from the previous techlead run',
     `Upstream techlead task id: ${task.id}`,
     `Upstream title: "${task.title}"`,
     '',
-    `TESTING: ${extractTestingSignal(task.description) ?? 'required'}`,
+    `TESTING: ${testingSignal}`,
   ].join('\n');
 
   const created = await createTask({
@@ -1472,7 +1540,7 @@ async function ensureTechleadFannedOut(args: { role: Role; task: Task }): Promis
   });
 
   console.log(
-    `[trickle-down] auto-spawned techlead rescue task ${created.id} because techlead ${task.id} finished without filing any implementation ticket`,
+    `[trickle-down] auto-spawned techlead rescue task ${created.id} because techlead ${task.id} left ${missing.length} coverage gap(s): ${missing.join('; ')}`,
   );
 
   emit({
@@ -1491,7 +1559,7 @@ async function ensureTechleadFannedOut(args: { role: Role; task: Task }): Promis
     payload: {
       from: 'system',
       direction: 'from-agent',
-      text: `Techlead finished without filing any implementation ticket — auto-queued "${created.title}" (${created.id}) so the plan actually gets delegated.`,
+      text: `Techlead finished with incomplete ticket coverage (${missing.length} gap(s)) — auto-queued "${created.title}" (${created.id}) to file the rest.`,
       scope: 'task',
     },
   });

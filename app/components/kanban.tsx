@@ -345,6 +345,16 @@ type TaskGroup = {
   members: KanbanTask[];
 };
 
+// bundle tasks under a common root ONLY when the parent link represents a
+// review chain (the reviewer for this task, or a fix iteration queued off a
+// reviewer). delegation hand-offs (pm → architect, architect → techlead,
+// techlead → coders) share parentTaskId for provenance / dependency gating
+// but must render as separate groups — otherwise every downstream ticket
+// ends up stacked under the original pm kickoff task.
+function isReviewChainLink(cursor: KanbanTask): boolean {
+  return cursor.role === 'reviewer' || cursor.iteration > 0;
+}
+
 function findColumnRoot(
   task: KanbanTask,
   colTaskIds: Set<string>,
@@ -353,7 +363,7 @@ function findColumnRoot(
   let rootId = task.id;
   let cursor = task;
   const seen = new Set<string>();
-  while (cursor.parentTaskId && !seen.has(cursor.parentTaskId)) {
+  while (cursor.parentTaskId && !seen.has(cursor.parentTaskId) && isReviewChainLink(cursor)) {
     seen.add(cursor.id);
     const parent = byId.get(cursor.parentTaskId);
     if (!parent) break;
