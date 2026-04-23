@@ -212,14 +212,11 @@ export async function executeTask(role: Role, task: Task): Promise<void> {
     }
 
     // safety net for the strict trickle-down chain (cto → pm → architect →
-    // techlead). when pm or architect finishes a mid-stream update (i.e. it
-    // was spawned by an upstream task via create_task, so `parentTaskId` is
-    // set), the agent is supposed to have filed the next-step task itself.
-    // if it judged the change "too small to forward" and skipped the hand-off,
-    // the chain stalls silently — auto-spawn the missing task so work keeps
-    // moving. the initial pm kickoff task has no parent and is handled by the
-    // JSON path above, so this only affects mid-stream updates.
+    // techlead → implementation roles). planning roles are expected to hand
+    // off via create_task; when they skip it the chain stalls silently, so we
+    // auto-spawn the missing next-step ticket to keep work moving.
     await ensureTrickleDownHandoff({ role, task, text });
+    await ensureTechleadFannedOut({ role, task });
 
     const finalRow = await getTaskById(task.id);
     if (finalRow) {
@@ -1392,6 +1389,109 @@ async function ensureTrickleDownHandoff(args: {
       from: 'system',
       direction: 'from-agent',
       text: `Auto-queued a ${nextRole} follow-up (${created.id}) because ${role} finished without filing one — keeping the CTO → PM → Architect → Tech Lead chain intact.`,
+      scope: 'task',
+    },
+  });
+}
+
+// roles the techlead MUST fan out into via create_task once PLAN.md is
+// written. used to detect the silent failure where the techlead finishes with
+// only a PLAN.md on disk and no delegated tickets on the board — which
+// effectively stalls the project because there is nobody scheduled to write
+// any actual code.
+const TECHLEAD_IMPLEMENTATION_ROLES: ReadonlySet<Role> = new Set<Role>([
+  'backend-dev',
+  'frontend-dev',
+  'devops',
+  'tester',
+  'qa',
+  'writer',
+  'security',
+  'release',
+]);
+
+// when the techlead completes without filing ANY implementation ticket, spawn
+// a pointed follow-up targeting the techlead itself. the upstream task already
+// produced PLAN.md via stream_code, so we do NOT re-run the planning step —
+// the follow-up focuses purely on converting the existing plan into tickets
+// via create_task. parented on the original techlead task so the kanban shows
+// the retry chain explicitly.
+async function ensureTechleadFannedOut(args: { role: Role; task: Task }): Promise<void> {
+  const { role, task } = args;
+  if (role !== 'techlead') return;
+
+  const children = await listChildTasks(task.id);
+  const alreadyFiled = children.some((child) =>
+    TECHLEAD_IMPLEMENTATION_ROLES.has(child.role as Role),
+  );
+  if (alreadyFiled) return;
+
+  // if the retry was already spawned (same parent, same role, title marker),
+  // don't keep spawning — one rescue per stall, and the reviewer will catch a
+  // second silent failure.
+  const alreadyRescued = children.some(
+    (child) => child.role === 'techlead' && child.title.startsWith('File implementation tickets'),
+  );
+  if (alreadyRescued) return;
+
+  const subject = stripFixPrefix(task.title)
+    .replace(/^(plan implementation for|replan for)[:\s]*/i, '')
+    .trim() || 'the project';
+
+  const description = [
+    'Forwarded automatically by the runtime because the techlead previous pass wrote `.software-house/PLAN.md` but did NOT file any implementation / devops / tester / writer ticket — the project has no work scheduled.',
+    '',
+    '## Do THIS in this run (no more planning)',
+    '1. Read the existing `.software-house/PLAN.md` end-to-end. Do NOT rewrite it; it already exists on disk and a reviewer pass will validate it.',
+    '2. Read `.software-house/REQUIREMENTS.md` + `.software-house/ARCHITECTURE.md` only if a specific detail is missing from PLAN.md.',
+    '3. Run `database_query` against `olympus_tasks` to list everything already on the board so you do not duplicate tickets.',
+    '4. For EVERY Work Breakdown chunk in PLAN.md that is not already on the board, call `create_task` with the correct target role (`backend-dev` / `frontend-dev` / `devops` / `tester` / `writer` / `security` / `release`). Copy the file paths, acceptance tests, and risks from PLAN.md into the ticket description verbatim.',
+    '5. Sequence with `dependsOn` exactly as PLAN.md describes (devops phase 1 after every phase-1 ticket, devops phase 2 after phase-1 tickets AND devops phase 1, tester ticket after every phase-1 and phase-2 ticket).',
+    '6. Honour the upstream TESTING signal: file exactly one `tester` ticket when it is `required`; file none when it is `skip`.',
+    '',
+    '## Absolute rules',
+    '- Do NOT call `stream_code` in this task. PLAN.md is already on disk and this run is purely a delegation pass.',
+    '- Do NOT finish this task until `create_task` has been called at least once for a concrete implementation / devops role. Finishing without any ticket filed is the exact failure we are recovering from.',
+    '- If you genuinely believe the whole plan is already on the board, reply with a short summary listing each existing ticket id by role so the reviewer can confirm.',
+    '',
+    `## Context from the stalled techlead run`,
+    `Upstream techlead task id: ${task.id}`,
+    `Upstream title: "${task.title}"`,
+    '',
+    `TESTING: ${extractTestingSignal(task.description) ?? 'required'}`,
+  ].join('\n');
+
+  const created = await createTask({
+    projectId: task.projectId,
+    role: 'techlead',
+    title: `File implementation tickets for ${subject}`,
+    description,
+    status: 'todo',
+    parentTaskId: task.id,
+    dependsOn: [task.id],
+  });
+
+  console.log(
+    `[trickle-down] auto-spawned techlead rescue task ${created.id} because techlead ${task.id} finished without filing any implementation ticket`,
+  );
+
+  emit({
+    projectId: task.projectId,
+    role: 'techlead',
+    taskId: created.id,
+    type: 'task-update',
+    payload: { ...kanbanTaskPayload(created), source: 'auto:techlead-rescue' },
+  });
+
+  emit({
+    projectId: task.projectId,
+    role: 'techlead',
+    taskId: task.id,
+    type: 'chat',
+    payload: {
+      from: 'system',
+      direction: 'from-agent',
+      text: `Techlead finished without filing any implementation ticket — auto-queued "${created.title}" (${created.id}) so the plan actually gets delegated.`,
       scope: 'task',
     },
   });
