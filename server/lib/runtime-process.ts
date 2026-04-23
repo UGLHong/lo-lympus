@@ -1,13 +1,14 @@
-import { type ChildProcess, spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from "node:child_process";
 
-import { emit } from '../../app/lib/event-bus.server';
-import { projectWorkspace } from '../workspace/paths';
+import { emit } from "../../app/lib/event-bus.server";
+import { projectWorkspace } from "../workspace/paths";
 
 // keep a single global map of running dev-servers across the server process,
 // so both the `runtime` agent tool and the human-facing "run application"
 // button talk to the same supervised child.
 const globalForRuntime = globalThis as unknown as {
   __olympusRuntimeProcesses?: Map<string, RuntimeProcess>;
+  __olympusLogBuffers?: Map<string, string[]>;
 };
 
 interface RuntimeProcess {
@@ -20,9 +21,15 @@ interface RuntimeProcess {
 
 const processes = (globalForRuntime.__olympusRuntimeProcesses ??= new Map());
 
+// ring-buffer of recent stdout+stderr lines per project slug, capped at 500
+const logBuffers = (globalForRuntime.__olympusLogBuffers ??= new Map<
+  string,
+  string[]
+>());
+
 const PORT_REGEX = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d+)/;
 
-const IS_POSIX = process.platform !== 'win32';
+const IS_POSIX = process.platform !== "win32";
 
 interface StartOptions {
   projectId: string;
@@ -34,21 +41,21 @@ interface StartOptions {
 }
 
 export interface RuntimeStartResult {
-  status: 'running' | 'already-running' | 'starting' | 'port-ready';
+  status: "running" | "already-running" | "starting" | "port-ready";
   pid?: number;
   port?: number;
   command: string;
 }
 
 export function getRuntimeStatus(projectSlug: string): {
-  status: 'running' | 'stopped';
+  status: "running" | "stopped";
   pid?: number;
   port?: number;
 } {
   const existing = processes.get(projectSlug);
-  if (!existing || existing.exited) return { status: 'stopped' };
+  if (!existing || existing.exited) return { status: "stopped" };
   return {
-    status: 'running',
+    status: "running",
     pid: existing.child.pid,
     port: existing.port,
   };
@@ -86,7 +93,7 @@ function signalTree(child: ChildProcess, signal: NodeJS.Signals): void {
 export function stopRuntime(projectSlug: string): boolean {
   const existing = processes.get(projectSlug);
   if (!existing) return false;
-  if (!existing.exited) signalTree(existing.child, 'SIGTERM');
+  if (!existing.exited) signalTree(existing.child, "SIGTERM");
   processes.delete(projectSlug);
   return true;
 }
@@ -113,16 +120,16 @@ export async function stopRuntimeAsync(
       resolve();
       return;
     }
-    existing.child.once('exit', () => resolve());
+    existing.child.once("exit", () => resolve());
   });
 
-  signalTree(existing.child, 'SIGTERM');
+  signalTree(existing.child, "SIGTERM");
 
   const timedOut = await raceWithTimeout(exited, timeoutMs);
   let escalatedToKill = false;
   if (timedOut && !existing.exited) {
     escalatedToKill = true;
-    signalTree(existing.child, 'SIGKILL');
+    signalTree(existing.child, "SIGKILL");
     await raceWithTimeout(exited, 1500);
   }
 
@@ -130,25 +137,33 @@ export async function stopRuntimeAsync(
   return { stopped: true, escalatedToKill };
 }
 
-async function raceWithTimeout(task: Promise<void>, timeoutMs: number): Promise<boolean> {
+async function raceWithTimeout(
+  task: Promise<void>,
+  timeoutMs: number,
+): Promise<boolean> {
   let timer: NodeJS.Timeout | null = null;
-  const timeout = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
-  const winner = await Promise.race([task.then(() => 'done' as const), timeout]);
+  const winner = await Promise.race([
+    task.then(() => "done" as const),
+    timeout,
+  ]);
   if (timer) clearTimeout(timer);
-  return winner === 'timeout';
+  return winner === "timeout";
 }
 
-export async function startRuntime(options: StartOptions): Promise<RuntimeStartResult> {
+export async function startRuntime(
+  options: StartOptions,
+): Promise<RuntimeStartResult> {
   const { projectId, projectSlug, role, taskId } = options;
-  const command = options.command ?? 'pnpm dev';
+  const command = options.command ?? "pnpm dev";
   const waitMs = options.waitMs ?? 4000;
 
   const existing = processes.get(projectSlug);
   if (existing && !existing.exited) {
     return {
-      status: 'already-running',
+      status: "already-running",
       pid: existing.child.pid,
       port: existing.port,
       command: existing.command,
@@ -162,59 +177,82 @@ export async function startRuntime(options: StartOptions): Promise<RuntimeStartR
     env: process.env,
     detached: IS_POSIX,
   });
-  const record: RuntimeProcess = { child, command, startedAt: Date.now(), exited: false };
+  const record: RuntimeProcess = {
+    child,
+    command,
+    startedAt: Date.now(),
+    exited: false,
+  };
   processes.set(projectSlug, record);
 
-  child.stdout?.on('data', (chunk: Buffer) => {
+  child.stdout?.on("data", (chunk: Buffer) => {
     const line = chunk.toString();
     emit({
       projectId,
       role,
       taskId,
-      type: 'log',
-      payload: { stream: 'stdout', line },
+      type: "log",
+      payload: { stream: "stdout", line },
     });
+    pushLog(projectSlug, line);
     const match = line.match(PORT_REGEX);
     if (match && !record.port) record.port = Number(match[1]);
   });
 
-  child.stderr?.on('data', (chunk: Buffer) => {
+  child.stderr?.on("data", (chunk: Buffer) => {
+    const line = chunk.toString();
     emit({
       projectId,
       role,
       taskId,
-      type: 'log',
-      payload: { stream: 'stderr', line: chunk.toString() },
+      type: "log",
+      payload: { stream: "stderr", line },
     });
+    pushLog(projectSlug, line);
   });
 
-  child.on('exit', (code) => {
+  child.on("exit", (code) => {
     record.exited = true;
     if (processes.get(projectSlug) === record) processes.delete(projectSlug);
     emit({
       projectId,
       role,
       taskId,
-      type: 'log',
-      payload: { stream: 'stdout', line: `[runtime] exited ${code}` },
+      type: "log",
+      payload: { stream: "stdout", line: `[runtime] exited ${code}` },
     });
   });
 
   await waitForPort(record, waitMs);
 
   return {
-    status: record.port ? 'port-ready' : 'starting',
+    status: record.port ? "port-ready" : "starting",
     pid: child.pid,
     port: record.port,
     command,
   };
 }
 
-async function waitForPort(record: RuntimeProcess, waitMs: number): Promise<void> {
+async function waitForPort(
+  record: RuntimeProcess,
+  waitMs: number,
+): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < waitMs) {
     if (record.port) return;
     if (record.exited) return;
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
+}
+
+function pushLog(projectSlug: string, line: string): void {
+  const buf = logBuffers.get(projectSlug) ?? [];
+  buf.push(line);
+  if (buf.length > 500) buf.splice(0, buf.length - 500);
+  logBuffers.set(projectSlug, buf);
+}
+
+export function getRecentLogs(projectSlug: string, n: number): string[] {
+  const buf = logBuffers.get(projectSlug) ?? [];
+  return buf.slice(-Math.min(n, 500));
 }

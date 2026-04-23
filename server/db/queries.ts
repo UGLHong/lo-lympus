@@ -1,26 +1,43 @@
-import { existsSync, rmSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { existsSync, rmSync } from "node:fs";
+import { resolve, sep } from "node:path";
 
-import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 
-import { ensureWorkspacesRoot } from '../workspace/paths';
-import { db } from './client';
-import { agents, events, projects, tasks } from './schema';
+import { ensureWorkspacesRoot } from "../workspace/paths";
+import { db } from "./client";
+import { agents, events, projects, tasks } from "./schema";
 
-import type { NewAgentRow, NewEventRow, NewProject, NewTask, Project, Task } from './schema';
-import type { Role } from '../const/roles';
+import type {
+  NewAgentRow,
+  NewEventRow,
+  NewProject,
+  NewTask,
+  Project,
+  Task,
+} from "./schema";
+import type { Role } from "../const/roles";
 
 export async function listProjects(): Promise<Project[]> {
   return db.select().from(projects).orderBy(desc(projects.createdAt));
 }
 
 export async function getProjectById(id: string): Promise<Project | undefined> {
-  const [row] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+  const [row] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, id))
+    .limit(1);
   return row;
 }
 
-export async function getProjectBySlug(slug: string): Promise<Project | undefined> {
-  const [row] = await db.select().from(projects).where(eq(projects.slug, slug)).limit(1);
+export async function getProjectBySlug(
+  slug: string,
+): Promise<Project | undefined> {
+  const [row] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.slug, slug))
+    .limit(1);
   return row;
 }
 
@@ -29,7 +46,9 @@ export async function createProject(input: NewProject): Promise<Project> {
   return row;
 }
 
-export async function deleteProjectById(id: string): Promise<Project | undefined> {
+export async function deleteProjectById(
+  id: string,
+): Promise<Project | undefined> {
   const project = await getProjectById(id);
   if (!project) return undefined;
 
@@ -49,13 +68,18 @@ export async function deleteProjectById(id: string): Promise<Project | undefined
   const workspacesRoot = resolve(ensureWorkspacesRoot());
   const workspacePath = resolve(project.workspaceDir);
   const isUnderRoot =
-    workspacePath === workspacesRoot || workspacePath.startsWith(workspacesRoot + sep);
+    workspacePath === workspacesRoot ||
+    workspacePath.startsWith(workspacesRoot + sep);
   try {
     if (isUnderRoot && existsSync(workspacePath)) {
       rmSync(workspacePath, { recursive: true, force: true });
     }
   } catch (err) {
-    console.error('[deleteProjectById] workspace rm failed', project.workspaceDir, err);
+    console.error(
+      "[deleteProjectById] workspace rm failed",
+      project.workspaceDir,
+      err,
+    );
   }
 
   return project;
@@ -91,8 +115,8 @@ export async function findOpenCtoTriageForParent(
     .where(
       and(
         eq(tasks.parentTaskId, parentTaskId),
-        eq(tasks.role, 'cto'),
-        inArray(tasks.status, ['todo', 'in-progress', 'blocked-needs-input']),
+        eq(tasks.role, "cto"),
+        inArray(tasks.status, ["todo", "in-progress", "blocked-needs-input"]),
       ),
     )
     .orderBy(desc(tasks.createdAt))
@@ -100,15 +124,17 @@ export async function findOpenCtoTriageForParent(
   return rows[0];
 }
 
-export async function findOpenCtoOverseerTask(projectId: string): Promise<Task | undefined> {
+export async function findOpenCtoOverseerTask(
+  projectId: string,
+): Promise<Task | undefined> {
   const rows = await db
     .select()
     .from(tasks)
     .where(
       and(
         eq(tasks.projectId, projectId),
-        eq(tasks.role, 'cto'),
-        inArray(tasks.status, ['todo', 'in-progress', 'blocked-needs-input']),
+        eq(tasks.role, "cto"),
+        inArray(tasks.status, ["todo", "in-progress", "blocked-needs-input"]),
         sql`${tasks.title} LIKE 'Overseer request:%'`,
       ),
     )
@@ -117,7 +143,10 @@ export async function findOpenCtoOverseerTask(projectId: string): Promise<Task |
   return rows[0];
 }
 
-export async function appendToTaskDescription(id: string, extra: string): Promise<Task | undefined> {
+export async function appendToTaskDescription(
+  id: string,
+  extra: string,
+): Promise<Task | undefined> {
   const existing = await getTaskById(id);
   if (!existing) return undefined;
   const nextDescription = existing.description
@@ -195,10 +224,13 @@ export async function updateTask(
   return row;
 }
 
-export async function markTaskDone(id: string, result?: Record<string, unknown>): Promise<void> {
+export async function markTaskDone(
+  id: string,
+  result?: Record<string, unknown>,
+): Promise<void> {
   await db
     .update(tasks)
-    .set({ status: 'done', result: result ?? null, updatedAt: new Date() })
+    .set({ status: "done", result: result ?? null, updatedAt: new Date() })
     .where(eq(tasks.id, id));
 }
 
@@ -208,7 +240,11 @@ export async function markTaskPendingReview(
 ): Promise<void> {
   await db
     .update(tasks)
-    .set({ status: 'pending-review', result: result ?? null, updatedAt: new Date() })
+    .set({
+      status: "pending-review",
+      result: result ?? null,
+      updatedAt: new Date(),
+    })
     .where(eq(tasks.id, id));
 }
 
@@ -217,7 +253,7 @@ export async function markTaskPendingReview(
 // so callers can emit kanban updates for them.
 async function propagateChainStatus(
   startId: string,
-  next: 'done' | 'failed',
+  next: "done" | "failed",
   reason?: string,
 ): Promise<Task[]> {
   const updated: Task[] = [];
@@ -227,11 +263,11 @@ async function propagateChainStatus(
     seen.add(cursor);
     const row = await getTaskById(cursor);
     if (!row) break;
-    if (row.status === 'pending-review') {
-      if (next === 'done') {
+    if (row.status === "pending-review") {
+      if (next === "done") {
         await markTaskDone(row.id, row.result ?? undefined);
       } else {
-        await markTaskFailed(row.id, reason ?? 'review chain escalated');
+        await markTaskFailed(row.id, reason ?? "review chain escalated");
       }
       const refreshed = await getTaskById(row.id);
       if (refreshed) updated.push(refreshed);
@@ -241,23 +277,57 @@ async function propagateChainStatus(
   return updated;
 }
 
-export async function approveReviewedChain(reviewedTaskId: string): Promise<Task[]> {
-  return propagateChainStatus(reviewedTaskId, 'done');
+export async function approveReviewedChain(
+  reviewedTaskId: string,
+): Promise<Task[]> {
+  return propagateChainStatus(reviewedTaskId, "done");
 }
 
 export async function failReviewedChain(
   reviewedTaskId: string,
   reason: string,
 ): Promise<Task[]> {
-  return propagateChainStatus(reviewedTaskId, 'failed', reason);
+  return propagateChainStatus(reviewedTaskId, "failed", reason);
 }
 
-export async function markTaskFailed(id: string, reason: string): Promise<void> {
+export async function markTaskFailed(
+  id: string,
+  reason: string,
+): Promise<void> {
   await db
     .update(tasks)
     .set({
-      status: 'failed',
+      status: "failed",
       blockedReason: reason,
+      result: { error: reason },
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, id));
+}
+
+/**
+ * Append a structured error entry to the task's errorLog for traceability.
+ * Non-destructive — never changes status, never overwrites existing entries.
+ */
+export async function appendTaskError(
+  id: string,
+  entry: { phase: string; message: string; stack?: string },
+): Promise<void> {
+  const row = await getTaskById(id);
+  if (!row) return;
+  const existing = Array.isArray((row as Record<string, unknown>).errorLog)
+    ? ((row as Record<string, unknown>).errorLog as unknown[])
+    : [];
+  const next = [...existing, { ts: new Date().toISOString(), ...entry }];
+  await db
+    .update(tasks)
+    .set({
+      errorLog: next as Array<{
+        ts: string;
+        phase: string;
+        message: string;
+        stack?: string;
+      }>,
       updatedAt: new Date(),
     })
     .where(eq(tasks.id, id));
@@ -276,12 +346,13 @@ export async function retryFailedTaskWithBudgetBonus(
 
   const currentIteration = existing.iteration ?? 0;
   const currentOverride = existing.maxIterationsOverride ?? 0;
-  const nextOverride = Math.max(currentOverride, currentIteration) + bonusIterations;
+  const nextOverride =
+    Math.max(currentOverride, currentIteration) + bonusIterations;
 
   const [row] = await db
     .update(tasks)
     .set({
-      status: 'todo',
+      status: "todo",
       claimedBy: null,
       claimedAt: null,
       blockedReason: null,
@@ -299,7 +370,7 @@ export async function redoTask(id: string): Promise<Task | undefined> {
   const [row] = await db
     .update(tasks)
     .set({
-      status: 'todo',
+      status: "todo",
       claimedBy: null,
       claimedAt: null,
       blockedReason: null,
@@ -321,7 +392,7 @@ export async function skipTaskSubtree(rootTaskId: string): Promise<Task[]> {
 
   const targets: Task[] = [root, ...descendants];
   const ids = targets
-    .filter((task) => task.status !== 'done' && task.status !== 'skipped')
+    .filter((task) => task.status !== "done" && task.status !== "skipped")
     .map((task) => task.id);
 
   if (ids.length === 0) return [];
@@ -329,7 +400,7 @@ export async function skipTaskSubtree(rootTaskId: string): Promise<Task[]> {
   const updated = await db
     .update(tasks)
     .set({
-      status: 'skipped',
+      status: "skipped",
       claimedBy: null,
       claimedAt: null,
       updatedAt: new Date(),
@@ -343,7 +414,9 @@ export async function skipTaskSubtree(rootTaskId: string): Promise<Task[]> {
 // walk parentTaskId upward to find the top of a review/fix chain. a "root"
 // here is the first task whose own parent is null — typically the original
 // pm-spawned ticket that kicked off the review chain.
-export async function getTaskChainRoot(taskId: string): Promise<Task | undefined> {
+export async function getTaskChainRoot(
+  taskId: string,
+): Promise<Task | undefined> {
   let cursor = await getTaskById(taskId);
   const seen = new Set<string>();
   while (cursor?.parentTaskId && !seen.has(cursor.id)) {
@@ -362,9 +435,11 @@ export async function appendUserNote(id: string, note: string): Promise<void> {
   const existing = await getTaskById(id);
   if (!existing) return;
 
-  const timestamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
   const entry = `[${timestamp}] ${note}`;
-  const updated = existing.userNotes ? `${existing.userNotes}\n${entry}` : entry;
+  const updated = existing.userNotes
+    ? `${existing.userNotes}\n${entry}`
+    : entry;
 
   await db
     .update(tasks)
@@ -376,7 +451,7 @@ export async function requeueTask(id: string, reason: string): Promise<void> {
   await db
     .update(tasks)
     .set({
-      status: 'todo',
+      status: "todo",
       claimedBy: null,
       claimedAt: null,
       blockedReason: reason,
@@ -392,22 +467,25 @@ export async function requeueOrphanedInProgressTasks(): Promise<number> {
   const orphans = await db
     .update(tasks)
     .set({
-      status: 'todo',
+      status: "todo",
       claimedBy: null,
       claimedAt: null,
-      blockedReason: 'recovered after server restart',
+      blockedReason: "recovered after server restart",
       updatedAt: new Date(),
     })
-    .where(eq(tasks.status, 'in-progress'))
+    .where(eq(tasks.status, "in-progress"))
     .returning({ id: tasks.id });
   return orphans.length;
 }
 
-export async function markTaskBlocked(id: string, reason: string): Promise<void> {
+export async function markTaskBlocked(
+  id: string,
+  reason: string,
+): Promise<void> {
   await db
     .update(tasks)
     .set({
-      status: 'blocked-needs-input',
+      status: "blocked-needs-input",
       blockedReason: reason,
       updatedAt: new Date(),
     })
@@ -418,13 +496,13 @@ export async function unblockTask(id: string): Promise<void> {
   await db
     .update(tasks)
     .set({
-      status: 'todo',
+      status: "todo",
       blockedReason: null,
       claimedBy: null,
       claimedAt: null,
       updatedAt: new Date(),
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, 'blocked-needs-input')));
+    .where(and(eq(tasks.id, id), eq(tasks.status, "blocked-needs-input")));
 }
 
 // tasks currently blocked-on-input whose latest update is older than the
@@ -436,7 +514,7 @@ export async function listStaleBlockedTasks(olderThan: Date): Promise<Task[]> {
     .from(tasks)
     .where(
       and(
-        eq(tasks.status, 'blocked-needs-input'),
+        eq(tasks.status, "blocked-needs-input"),
         sql`${tasks.updatedAt} < ${olderThan.toISOString()}`,
       ),
     )
@@ -451,24 +529,24 @@ export async function resumeBlockedTaskWithAssumptions(
   originalReason: string,
 ): Promise<Task | undefined> {
   const annotated = [
-    'CLARIFICATION TIMEOUT',
-    'The human did not answer within the configured budget.',
-    'Commit to the fallback assumptions you listed and produce the artifact now.',
-    '',
-    '--- original question(s) ---',
+    "CLARIFICATION TIMEOUT",
+    "The human did not answer within the configured budget.",
+    "Commit to the fallback assumptions you listed and produce the artifact now.",
+    "",
+    "--- original question(s) ---",
     originalReason,
-  ].join('\n');
+  ].join("\n");
 
   const [row] = await db
     .update(tasks)
     .set({
-      status: 'todo',
+      status: "todo",
       blockedReason: annotated,
       claimedBy: null,
       claimedAt: null,
       updatedAt: new Date(),
     })
-    .where(and(eq(tasks.id, id), eq(tasks.status, 'blocked-needs-input')))
+    .where(and(eq(tasks.id, id), eq(tasks.status, "blocked-needs-input")))
     .returning();
   return row;
 }
@@ -524,19 +602,32 @@ export async function countTasksByStatus(projectId: string) {
   return rows;
 }
 
-export async function pendingRoleTasks(role: Role, projectId?: string): Promise<Task[]> {
+export async function pendingRoleTasks(
+  role: Role,
+  projectId?: string,
+): Promise<Task[]> {
   const conditions = projectId
-    ? and(eq(tasks.role, role), eq(tasks.status, 'todo'), eq(tasks.projectId, projectId))
-    : and(eq(tasks.role, role), eq(tasks.status, 'todo'));
-  return db.select().from(tasks).where(conditions).orderBy(asc(tasks.createdAt));
+    ? and(
+        eq(tasks.role, role),
+        eq(tasks.status, "todo"),
+        eq(tasks.projectId, projectId),
+      )
+    : and(eq(tasks.role, role), eq(tasks.status, "todo"));
+  return db
+    .select()
+    .from(tasks)
+    .where(conditions)
+    .orderBy(asc(tasks.createdAt));
 }
 
-export async function tasksDependenciesSatisfied(ids: string[]): Promise<boolean> {
+export async function tasksDependenciesSatisfied(
+  ids: string[],
+): Promise<boolean> {
   if (ids.length === 0) return true;
   const rows = await db
     .select({ id: tasks.id, status: tasks.status })
     .from(tasks)
     .where(inArray(tasks.id, ids));
   if (rows.length !== ids.length) return false;
-  return rows.every((row) => row.status === 'done' || row.status === 'skipped');
+  return rows.every((row) => row.status === "done" || row.status === "skipped");
 }

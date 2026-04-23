@@ -2,23 +2,37 @@ import {
   AlertCircle,
   Braces,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  ClipboardList,
+  Clock,
+  Code2,
   Database,
   FileCode2,
+  FileSearch,
+  FileText,
+  FolderSearch,
   Globe,
   HelpCircle,
   MessageSquareText,
+  MousePointerClick,
+  Play,
   PlayCircle,
   ShieldCheck,
   Sparkles,
   Terminal as TerminalIcon,
+  TriangleAlert,
   WifiOff,
-} from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+  Wrench,
+  X,
+  Zap,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { useTaskActivity, type ActivityItem } from '@/hooks/use-task-activity';
-import { ROLE_COLOR, ROLE_LABEL, isRole, type Role } from '@/lib/roles';
-import { useWorkspace } from '@/lib/workspace-context';
-import { cn } from '@/lib/cn';
+import { useTaskActivity, type ActivityItem } from "@/hooks/use-task-activity";
+import { ROLE_COLOR, ROLE_LABEL, isRole, type Role } from "@/lib/roles";
+import { useWorkspace } from "@/lib/workspace-context";
+import { cn } from "@/lib/cn";
 
 interface TaskChatProps {
   projectId: string;
@@ -28,15 +42,15 @@ interface TaskChatProps {
   taskStatus: string;
 }
 
-type ChatItem = Extract<ActivityItem, { kind: 'chat' }>;
-type PendingQuestion = ChatItem & { direction: 'to-human' };
+type ChatItem = Extract<ActivityItem, { kind: "chat" }>;
+type PendingQuestion = ChatItem & { direction: "to-human" };
 
 function findLatestQuestion(items: ActivityItem[]): PendingQuestion | null {
   for (let i = items.length - 1; i >= 0; i -= 1) {
     const item = items[i];
-    if (item.kind !== 'chat') continue;
-    if (item.direction === 'from-human') return null;
-    if (item.direction === 'to-human') return item as PendingQuestion;
+    if (item.kind !== "chat") continue;
+    if (item.direction === "from-human") return null;
+    if (item.direction === "to-human") return item as PendingQuestion;
   }
   return null;
 }
@@ -44,38 +58,132 @@ function findLatestQuestion(items: ActivityItem[]): PendingQuestion | null {
 // derive a human-friendly label from the freshest unresolved signal so the
 // working indicator shows what the agent is actually doing right now.
 function deriveWorkingHint(items: ActivityItem[]): string {
-  let hint = 'working';
+  let hint = "working";
   let agentPending = 0;
   let toolPending: { verb: string; target?: string } | null = null;
   for (const item of items) {
-    if (item.kind === 'tool' && item.toolKind === 'agent') {
-      if (item.action === 'generate.start') agentPending += 1;
-      else if (item.action === 'generate.end' || item.action === 'generate.error') {
+    if (item.kind === "tool" && item.toolKind === "agent") {
+      if (item.action === "generate.start") agentPending += 1;
+      else if (
+        item.action === "generate.end" ||
+        item.action === "generate.error"
+      ) {
         agentPending = Math.max(0, agentPending - 1);
       }
     }
-    if (item.kind === 'tool' && item.toolKind !== 'agent') {
-      if (item.action.endsWith('.start')) {
+    if (item.kind === "tool" && item.toolKind !== "agent") {
+      if (item.action.endsWith(".start")) {
         toolPending = {
-          verb: `${item.toolKind} ${item.action.replace(/\.start$/, '')}`,
+          verb: `${item.toolKind} ${item.action.replace(/\.start$/, "")}`,
           target: item.path ?? item.url,
         };
       } else if (
         toolPending &&
-        (item.action.endsWith('.end') || item.action.endsWith('.done') || item.action.endsWith('.error'))
+        (item.action.endsWith(".end") ||
+          item.action.endsWith(".done") ||
+          item.action.endsWith(".error"))
       ) {
         toolPending = null;
       }
     }
-    if (item.kind === 'state' && item.status === 'thinking') {
-      hint = item.note ? `thinking about ${item.note}` : 'thinking';
+    if (item.kind === "state" && item.status === "thinking") {
+      hint = item.note ? `thinking about ${item.note}` : "thinking";
     }
   }
   if (toolPending) {
-    return toolPending.target ? `${toolPending.verb} ${toolPending.target}` : toolPending.verb;
+    return toolPending.target
+      ? `${toolPending.verb} ${toolPending.target}`
+      : toolPending.verb;
   }
-  if (agentPending > 0) return 'thinking';
+  if (agentPending > 0) return "thinking";
   return hint;
+}
+
+// ── session grouping ─────────────────────────────────────────────────────────
+// A "thinking session" is one agent LLM call: everything from
+// agent:generate.start through agent:generate.end (or .error) belongs to it.
+// Items that fall outside any session (human messages, pre-session logs) are
+// collected into "loose" groups and rendered without a session wrapper.
+
+interface AgentSession {
+  kind: "session";
+  id: string; // stable key — the generate.start item's id
+  sessionIndex: number;
+  role?: string;
+  live: boolean; // true while generate.end has not yet arrived
+  failed: boolean;
+  durationMs?: number;
+  items: ActivityItem[];
+}
+
+interface LooseGroup {
+  kind: "loose";
+  id: string;
+  items: ActivityItem[];
+}
+
+type FeedGroup = AgentSession | LooseGroup;
+
+function groupIntoSessions(items: ActivityItem[]): FeedGroup[] {
+  const groups: FeedGroup[] = [];
+  let session: AgentSession | null = null;
+  let loose: ActivityItem[] = [];
+  let sessionIndex = 0;
+  let looseIndex = 0;
+
+  for (const item of items) {
+    const isStart =
+      item.kind === "tool" &&
+      item.toolKind === "agent" &&
+      item.action === "generate.start";
+    const isEnd =
+      item.kind === "tool" &&
+      item.toolKind === "agent" &&
+      (item.action === "generate.end" || item.action === "generate.error");
+
+    if (isStart) {
+      // flush any loose items collected before this session
+      if (loose.length > 0) {
+        groups.push({
+          kind: "loose",
+          id: `loose-${looseIndex++}`,
+          items: loose,
+        });
+        loose = [];
+      }
+      // close an unclosed prior session (shouldn't normally happen)
+      if (session) groups.push(session);
+      session = {
+        kind: "session",
+        id: item.id,
+        sessionIndex: sessionIndex++,
+        role: item.role,
+        live: true,
+        failed: false,
+        items: [item],
+      };
+    } else if (isEnd && session) {
+      session.items.push(item);
+      session.live = false;
+      session.failed = item.action === "generate.error";
+      if (typeof item.ms === "number") session.durationMs = item.ms;
+      groups.push(session);
+      session = null;
+    } else if (session) {
+      session.items.push(item);
+    } else {
+      loose.push(item);
+    }
+  }
+
+  // flush any still-open session (live, waiting for generate.end)
+  if (session) groups.push(session);
+  // flush trailing loose items
+  if (loose.length > 0) {
+    groups.push({ kind: "loose", id: `loose-${looseIndex++}`, items: loose });
+  }
+
+  return groups;
 }
 
 export function TaskChat({
@@ -86,7 +194,8 @@ export function TaskChat({
   taskStatus,
 }: TaskChatProps) {
   const { items, status, ingestLocal } = useTaskActivity(taskId);
-  const [draft, setDraft] = useState('');
+  const groups = useMemo(() => groupIntoSessions(items), [items]);
+  const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const questionRef = useRef<HTMLDivElement | null>(null);
@@ -95,8 +204,8 @@ export function TaskChat({
   const { openFile } = useWorkspace();
 
   const pendingQuestion = useMemo(() => findLatestQuestion(items), [items]);
-  const isBlocked = taskStatus === 'blocked-needs-input';
-  const isWorking = taskStatus === 'in-progress';
+  const isBlocked = taskStatus === "blocked-needs-input";
+  const isWorking = taskStatus === "in-progress";
   const workingHint = useMemo(() => deriveWorkingHint(items), [items]);
   const isEmpty = items.length === 0;
 
@@ -109,7 +218,10 @@ export function TaskChat({
     }
     if (lastQuestionIdRef.current === pendingQuestionId) return;
     lastQuestionIdRef.current = pendingQuestionId;
-    questionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    questionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
     if (document.activeElement === document.body) {
       inputRef.current?.focus();
     }
@@ -134,48 +246,48 @@ export function TaskChat({
       const trimmed = text.trim();
       if (!trimmed || sending) return;
       setSending(true);
-      setDraft('');
+      setDraft("");
 
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       ingestLocal({
-        kind: 'chat',
+        kind: "chat",
         id: localId,
-        role: 'human',
-        direction: 'from-human',
+        role: "human",
+        direction: "from-human",
         text: trimmed,
         at: Date.now(),
       });
 
       try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             projectId,
             role: taskRole,
             taskId,
             message: trimmed,
-            scope: 'task',
+            scope: "task",
             localId,
           }),
         });
         if (!res.ok) {
           ingestLocal({
-            kind: 'chat',
+            kind: "chat",
             id: `error-${Date.now()}`,
-            role: 'system',
-            direction: 'from-agent',
+            role: "system",
+            direction: "from-agent",
             text: `Failed to send message (${res.status} ${res.statusText}). Check server logs.`,
             at: Date.now(),
           });
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error';
+        const message = err instanceof Error ? err.message : "Unknown error";
         ingestLocal({
-          kind: 'chat',
+          kind: "chat",
           id: `error-${Date.now()}`,
-          role: 'system',
-          direction: 'from-agent',
+          role: "system",
+          direction: "from-agent",
           text: `Error sending message: ${message}.`,
           at: Date.now(),
         });
@@ -187,7 +299,8 @@ export function TaskChat({
   );
 
   const handleDraftChange = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => setDraft(event.target.value),
+    (event: React.ChangeEvent<HTMLInputElement>) =>
+      setDraft(event.target.value),
     [],
   );
 
@@ -200,10 +313,10 @@ export function TaskChat({
   );
 
   const placeholder = pendingQuestion
-    ? 'type a freeform answer or pick an option above'
+    ? "type a freeform answer or pick an option above"
     : isBlocked
-      ? 'provide input to unblock the task'
-      : 'reply / add note';
+      ? "provide input to unblock the task"
+      : "reply / add note";
 
   return (
     <div className="h-full flex flex-col bg-bg-raised min-h-0">
@@ -217,7 +330,12 @@ export function TaskChat({
         </span>
         <span className="flex items-center gap-2">
           <ConnectionBadge status={status} />
-          <span className={cn('text-[10px]', isBlocked ? 'text-yellow-300' : 'text-text-faint')}>
+          <span
+            className={cn(
+              "text-[10px]",
+              isBlocked ? "text-yellow-300" : "text-text-faint",
+            )}
+          >
             {taskStatus}
           </span>
         </span>
@@ -227,27 +345,43 @@ export function TaskChat({
         ref={scrollerRef}
         className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-1.5 text-xs"
       >
-        {isEmpty && status === 'live' && (
+        {isEmpty && status === "live" && (
           <div className="text-text-faint italic">
             no activity yet — streamed logs and questions will appear here.
           </div>
         )}
-        {isEmpty && status !== 'live' && (
-          <div className="text-text-faint italic">connecting to live activity…</div>
+        {isEmpty && status !== "live" && (
+          <div className="text-text-faint italic">
+            connecting to live activity…
+          </div>
         )}
-        {items.map((item) => {
-          const isActiveQuestion =
-            item.kind === 'chat' &&
-            item.direction === 'to-human' &&
-            pendingQuestion?.id === item.id;
+        {groups.map((group) => {
+          if (group.kind === "loose") {
+            return group.items.map((item) => {
+              const isActiveQuestion =
+                item.kind === "chat" &&
+                item.direction === "to-human" &&
+                pendingQuestion?.id === item.id;
+              return (
+                <FeedRow
+                  key={item.id}
+                  item={item}
+                  onOpenFile={handleOpenFile}
+                  onOptionClick={sendMessage}
+                  highlightRef={isActiveQuestion ? questionRef : undefined}
+                  isActiveQuestion={isActiveQuestion}
+                />
+              );
+            });
+          }
           return (
-            <FeedRow
-              key={item.id}
-              item={item}
+            <ThinkingSession
+              key={group.id}
+              group={group}
+              pendingQuestionId={pendingQuestion?.id ?? null}
+              questionRef={questionRef}
               onOpenFile={handleOpenFile}
               onOptionClick={sendMessage}
-              highlightRef={isActiveQuestion ? questionRef : undefined}
-              isActiveQuestion={isActiveQuestion}
             />
           );
         })}
@@ -257,8 +391,8 @@ export function TaskChat({
       <form
         onSubmit={handleSubmit}
         className={cn(
-          'border-t border-border p-2 flex gap-2 shrink-0',
-          isBlocked && 'attention-glow border-t-yellow-400',
+          "border-t border-border p-2 flex gap-2 shrink-0",
+          isBlocked && "attention-glow border-t-yellow-400",
         )}
       >
         <input
@@ -274,7 +408,11 @@ export function TaskChat({
           spellCheck={false}
           className="flex-1 bg-bg-sunken border border-border rounded px-2 py-1.5 text-xs text-text focus:outline-none focus:border-accent disabled:opacity-50"
         />
-        <button type="submit" className="btn btn-primary" disabled={sending || draft.trim().length === 0}>
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={sending || draft.trim().length === 0}
+        >
           Send
         </button>
       </form>
@@ -283,7 +421,7 @@ export function TaskChat({
 }
 
 function ConnectionBadge({ status }: { status: string }) {
-  if (status === 'live') {
+  if (status === "live") {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400/80">
         <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
@@ -291,7 +429,7 @@ function ConnectionBadge({ status }: { status: string }) {
       </span>
     );
   }
-  if (status === 'reconnecting') {
+  if (status === "reconnecting") {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] text-yellow-300/80">
         <WifiOff size={10} />
@@ -299,7 +437,7 @@ function ConnectionBadge({ status }: { status: string }) {
       </span>
     );
   }
-  if (status === 'closed') {
+  if (status === "closed") {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] text-text-faint">
         <WifiOff size={10} />
@@ -310,7 +448,7 @@ function ConnectionBadge({ status }: { status: string }) {
   return (
     <span className="inline-flex items-center gap-1 text-[10px] text-text-faint">
       <span className="inline-block w-1.5 h-1.5 rounded-full bg-text-faint animate-pulse" />
-      {status === 'replaying' ? 'loading history' : 'connecting'}
+      {status === "replaying" ? "loading history" : "connecting"}
     </span>
   );
 }
@@ -328,7 +466,7 @@ function FeedRow({
   highlightRef?: React.RefObject<HTMLDivElement | null>;
   isActiveQuestion?: boolean;
 }) {
-  if (item.kind === 'chat') {
+  if (item.kind === "chat") {
     return (
       <ChatBubble
         item={item}
@@ -338,44 +476,54 @@ function FeedRow({
       />
     );
   }
-  if (item.kind === 'tool') {
+  if (item.kind === "tool") {
     return <ToolRow item={item} onOpenFile={onOpenFile} />;
   }
-  if (item.kind === 'token-stream') {
+  if (item.kind === "token-stream") {
     return <TokenStreamRow item={item} />;
   }
   return <InlineEvent item={item} onOpenFile={onOpenFile} />;
 }
 
-function TokenStreamRow({ item }: { item: Extract<ActivityItem, { kind: 'token-stream' }> }) {
-  const role = item.role ?? 'agent';
-  const color = isRole(role) ? ROLE_COLOR[role as Role] : '#f59e0b';
+function TokenStreamRow({
+  item,
+}: {
+  item: Extract<ActivityItem, { kind: "token-stream" }>;
+}) {
+  const role = item.role ?? "agent";
+  const color = isRole(role) ? ROLE_COLOR[role as Role] : "#f59e0b";
   const label = isRole(role) ? ROLE_LABEL[role as Role] : role;
-  const isReasoning = item.streamKind === 'reasoning';
+  const isReasoning = item.streamKind === "reasoning";
   return (
     <div className="flex justify-start">
       <div
         className={cn(
-          'max-w-[90%] rounded px-2 py-1.5 border bg-bg-sunken/70 border-border/60',
-          !item.done && 'attention-glow',
+          "max-w-[90%] rounded px-2 py-1.5 border bg-bg-sunken/70 border-border/60",
+          !item.done && "attention-glow",
         )}
       >
         <div className="flex items-center gap-1.5 text-[10px] text-text-faint mb-0.5">
-          <Sparkles size={10} className={cn('text-accent', !item.done && 'animate-pulse')} />
-          <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <Sparkles
+            size={10}
+            className={cn("text-accent", !item.done && "animate-pulse")}
+          />
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{ backgroundColor: color }}
+          />
           <span>{label}</span>
           <span className="ml-1 uppercase tracking-wider text-[9px] text-text-faint">
-            {isReasoning ? 'reasoning' : 'thinking'}
+            {isReasoning ? "reasoning" : "thinking"}
           </span>
           {!item.done && <span className="text-accent">· live</span>}
         </div>
         <div
           className={cn(
-            'whitespace-pre-wrap break-words text-text',
-            isReasoning && 'italic text-text-muted',
+            "whitespace-pre-wrap break-words text-text leading-relaxed",
+            isReasoning && "italic text-text-muted",
           )}
         >
-          {item.text || (item.done ? '' : '…')}
+          {item.text || (item.done ? "" : "…")}
         </div>
       </div>
     </div>
@@ -393,64 +541,82 @@ function ChatBubble({
   highlightRef?: React.RefObject<HTMLDivElement | null>;
   isActiveQuestion?: boolean;
 }) {
-  const isHuman = item.direction === 'from-human';
-  const color = isRole(item.role ?? '') ? ROLE_COLOR[item.role as Role] : '#f59e0b';
-  const label = isHuman ? 'you' : isRole(item.role ?? '') ? ROLE_LABEL[item.role as Role] : item.role;
+  const isHuman = item.direction === "from-human";
+  const color = isRole(item.role ?? "")
+    ? ROLE_COLOR[item.role as Role]
+    : "#f59e0b";
+  const label = isHuman
+    ? "you"
+    : isRole(item.role ?? "")
+      ? ROLE_LABEL[item.role as Role]
+      : item.role;
 
-  if (item.direction === 'to-human' && isActiveQuestion) {
+  if (item.direction === "to-human" && isActiveQuestion) {
     return (
       <QuestionBlock
         item={item}
         color={color}
-        label={label ?? 'agent'}
+        label={label ?? "agent"}
         onOptionClick={onOptionClick}
         highlightRef={highlightRef}
       />
     );
   }
 
-  if (item.messageType === 'cto-resolution') {
+  if (item.messageType === "cto-resolution") {
     return (
       <CtoResolutionBubble
         item={item}
         color={color}
-        label={label ?? 'cto'}
+        label={label ?? "cto"}
         highlightRef={highlightRef}
       />
     );
   }
 
-  if (item.messageType === 'hitl-question') {
+  if (item.messageType === "hitl-question") {
     return (
       <HitlForwardedBubble
         item={item}
         color={color}
-        label={label ?? 'agent'}
+        label={label ?? "agent"}
         highlightRef={highlightRef}
       />
     );
   }
 
-  const isInactiveQuestion = item.direction === 'to-human';
+  const isInactiveQuestion = item.direction === "to-human";
 
   return (
-    <div ref={highlightRef} className={cn('flex', isHuman ? 'justify-end' : 'justify-start')}>
+    <div
+      ref={highlightRef}
+      className={cn("flex", isHuman ? "justify-end" : "justify-start")}
+    >
       <div
         className={cn(
-          'max-w-[90%] rounded px-2 py-1.5 border',
-          isHuman ? 'bg-accent-soft border-accent/40' : 'bg-bg-sunken border-border',
-          isInactiveQuestion && 'opacity-60',
+          "max-w-[90%] rounded px-2 py-1.5 border",
+          isHuman
+            ? "bg-accent-soft border-accent/40"
+            : "bg-bg-sunken border-border",
+          isInactiveQuestion && "opacity-60",
         )}
       >
         <div className="flex items-center gap-1.5 text-[10px] text-text-faint mb-0.5">
           <MessageSquareText size={10} className="text-text-faint" />
-          <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{ backgroundColor: color }}
+          />
           <span>{label}</span>
           {isInactiveQuestion && (
-            <span className="ml-1 uppercase tracking-wider text-[9px] text-yellow-300">asks you</span>
+            <span className="ml-1 uppercase tracking-wider text-[9px] text-yellow-300">
+              asks you
+            </span>
           )}
         </div>
-        <div className="whitespace-pre-wrap break-words text-text">{item.text}</div>
+        <div className="whitespace-pre-wrap break-words text-text">
+          {item.text}
+        </div>
         {item.context && (
           <pre className="mt-1 text-[10px] text-text-faint whitespace-pre-wrap font-mono bg-bg/40 border border-border/60 rounded p-1">
             {item.context}
@@ -473,15 +639,18 @@ function CtoResolutionBubble({
   highlightRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   const answer = item.answer ?? item.text;
-  const rationale = item.rationale ?? '';
-  const originalQuestion = item.originalQuestion ?? '';
+  const rationale = item.rationale ?? "";
+  const originalQuestion = item.originalQuestion ?? "";
 
   return (
     <div ref={highlightRef} className="flex justify-start">
       <div className="w-full max-w-[95%] rounded-lg border border-emerald-400/40 bg-emerald-500/5 overflow-hidden">
         <div className="flex items-center gap-1.5 text-[10px] px-3 pt-2.5 pb-2 border-b border-emerald-400/20">
           <ShieldCheck size={11} className="text-emerald-300" />
-          <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{ backgroundColor: color }}
+          />
           <span className="text-text">{label}</span>
           <span className="ml-1 uppercase tracking-wider text-[9px] text-emerald-300">
             resolved on behalf of human
@@ -501,14 +670,18 @@ function CtoResolutionBubble({
           <div className="uppercase tracking-wider text-[9px] text-emerald-300/90 mb-1">
             CTO answer
           </div>
-          <div className="whitespace-pre-wrap break-words text-text">{answer}</div>
+          <div className="whitespace-pre-wrap break-words text-text">
+            {answer}
+          </div>
         </div>
         {rationale && (
           <div className="px-3 pb-2.5 text-[11px]">
             <div className="uppercase tracking-wider text-[9px] text-text-faint mb-1">
               Rationale
             </div>
-            <div className="whitespace-pre-wrap break-words text-text-muted italic">{rationale}</div>
+            <div className="whitespace-pre-wrap break-words text-text-muted italic">
+              {rationale}
+            </div>
           </div>
         )}
       </div>
@@ -527,15 +700,19 @@ function HitlForwardedBubble({
   label: string;
   highlightRef?: React.RefObject<HTMLDivElement | null>;
 }) {
-  const hasClarifications = !!item.clarifications && item.clarifications.length > 0;
-  const headline = item.text.split('\n')[0];
+  const hasClarifications =
+    !!item.clarifications && item.clarifications.length > 0;
+  const headline = item.text.split("\n")[0];
 
   return (
     <div ref={highlightRef} className="flex justify-start">
       <div className="w-full max-w-[95%] rounded-lg border border-sky-400/30 bg-sky-500/5 overflow-hidden">
         <div className="flex items-center gap-1.5 text-[10px] px-3 pt-2.5 pb-2 border-b border-sky-400/20">
           <HelpCircle size={11} className="text-sky-300" />
-          <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{ backgroundColor: color }}
+          />
           <span className="text-text">{label}</span>
           <span className="ml-1 uppercase tracking-wider text-[9px] text-sky-300">
             sent to cto
@@ -545,7 +722,10 @@ function HitlForwardedBubble({
         {hasClarifications ? (
           <div className="px-3 pb-2 space-y-1.5">
             {item.clarifications!.map((c, index) => (
-              <div key={index} className="rounded border border-sky-400/15 bg-bg/30 p-2">
+              <div
+                key={index}
+                className="rounded border border-sky-400/15 bg-bg/30 p-2"
+              >
                 <div className="text-[11px] text-text">
                   <span className="font-mono text-sky-300/70 text-[10px] mr-1.5">
                     Q{index + 1}.
@@ -554,7 +734,7 @@ function HitlForwardedBubble({
                 </div>
                 {c.options.length > 0 && (
                   <div className="mt-1 text-[10px] text-text-muted">
-                    options: {c.options.join(' · ')}
+                    options: {c.options.join(" · ")}
                   </div>
                 )}
                 {c.fallbackAssumption && (
@@ -565,13 +745,11 @@ function HitlForwardedBubble({
               </div>
             ))}
           </div>
-        ) : (
-          item.options && item.options.length > 0 ? (
-            <div className="px-3 pb-2 text-[10px] text-text-muted">
-              options: {item.options.join(' · ')}
-            </div>
-          ) : null
-        )}
+        ) : item.options && item.options.length > 0 ? (
+          <div className="px-3 pb-2 text-[10px] text-text-muted">
+            options: {item.options.join(" · ")}
+          </div>
+        ) : null}
         {item.context && (
           <div className="px-3 pb-2.5">
             <pre className="text-[10px] text-text-faint whitespace-pre-wrap font-mono bg-bg/40 border border-border/60 rounded p-1.5">
@@ -597,9 +775,13 @@ function QuestionBlock({
   onOptionClick: (option: string) => Promise<void>;
   highlightRef?: React.RefObject<HTMLDivElement | null>;
 }) {
-  const hasClarifications = !!item.clarifications && item.clarifications.length > 0;
+  const hasClarifications =
+    !!item.clarifications && item.clarifications.length > 0;
   const summaryText = hasClarifications
-    ? item.text.split('\n')[0].replace(/^clarification needed:\s*/i, '').trim()
+    ? item.text
+        .split("\n")[0]
+        .replace(/^clarification needed:\s*/i, "")
+        .trim()
     : item.text;
 
   return (
@@ -607,15 +789,23 @@ function QuestionBlock({
       <div className="w-full max-w-[95%] rounded-lg border border-yellow-400/30 bg-yellow-500/5 overflow-hidden attention-glow">
         <div className="flex items-center gap-1.5 text-[10px] text-text-faint px-3 pt-2.5 pb-2 border-b border-border/30">
           <MessageSquareText size={10} className="text-yellow-300/70" />
-          <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{ backgroundColor: color }}
+          />
           <span>{label}</span>
-          <span className="ml-1 uppercase tracking-wider text-[9px] text-yellow-300">asks you</span>
+          <span className="ml-1 uppercase tracking-wider text-[9px] text-yellow-300">
+            asks you
+          </span>
         </div>
 
         <div className="px-3 pt-2.5 pb-1 text-xs text-text">{summaryText}</div>
 
         {hasClarifications ? (
-          <ClarificationForm clarifications={item.clarifications!} onSubmit={onOptionClick} />
+          <ClarificationForm
+            clarifications={item.clarifications!}
+            onSubmit={onOptionClick}
+          />
         ) : (
           <>
             <SingleQuestionBody item={item} onOptionClick={onOptionClick} />
@@ -631,7 +821,7 @@ function QuestionBlock({
   );
 }
 
-type ClarificationEntry = NonNullable<ChatItem['clarifications']>[number];
+type ClarificationEntry = NonNullable<ChatItem["clarifications"]>[number];
 
 // multi-question clarifications were previously rendered as independent option
 // buttons that each submitted a single-question answer on click, so answering
@@ -642,23 +832,30 @@ function ClarificationForm({
   clarifications,
   onSubmit,
 }: {
-  clarifications: NonNullable<ChatItem['clarifications']>;
+  clarifications: NonNullable<ChatItem["clarifications"]>;
   onSubmit: (text: string) => Promise<void>;
 }) {
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
-  const handleOptionSelect = useCallback((questionIndex: number, option: string) => {
-    setAnswers((prev) => ({ ...prev, [questionIndex]: option }));
-  }, []);
+  const handleOptionSelect = useCallback(
+    (questionIndex: number, option: string) => {
+      setAnswers((prev) => ({ ...prev, [questionIndex]: option }));
+    },
+    [],
+  );
 
-  const handleAnswerChange = useCallback((questionIndex: number, value: string) => {
-    setAnswers((prev) => ({ ...prev, [questionIndex]: value }));
-  }, []);
+  const handleAnswerChange = useCallback(
+    (questionIndex: number, value: string) => {
+      setAnswers((prev) => ({ ...prev, [questionIndex]: value }));
+    },
+    [],
+  );
 
   const answeredCount = clarifications.reduce(
-    (total, _, index) => ((answers[index] ?? '').trim().length > 0 ? total + 1 : total),
+    (total, _, index) =>
+      (answers[index] ?? "").trim().length > 0 ? total + 1 : total,
     0,
   );
   const allAnswered = answeredCount === clarifications.length;
@@ -668,8 +865,8 @@ function ClarificationForm({
     if (disabled || !allAnswered) return;
     setSubmitting(true);
     const batched = clarifications
-      .map((_, index) => `Q${index + 1}: ${answers[index]?.trim() ?? ''}`)
-      .join('\n');
+      .map((_, index) => `Q${index + 1}: ${answers[index]?.trim() ?? ""}`)
+      .join("\n");
     try {
       await onSubmit(batched);
       setSubmitted(true);
@@ -685,7 +882,7 @@ function ClarificationForm({
           key={questionIndex}
           clarification={clarification}
           questionIndex={questionIndex}
-          answer={answers[questionIndex] ?? ''}
+          answer={answers[questionIndex] ?? ""}
           disabled={disabled}
           onOptionSelect={handleOptionSelect}
           onAnswerChange={handleAnswerChange}
@@ -694,9 +891,9 @@ function ClarificationForm({
       <div className="px-3 py-2.5 border-t border-border/30 flex items-center justify-between gap-2">
         <span className="text-[10px] italic text-text-faint">
           {submitted
-            ? 'answers sent'
+            ? "answers sent"
             : allAnswered
-              ? 'all questions answered — ready to send'
+              ? "all questions answered — ready to send"
               : `${answeredCount}/${clarifications.length} answered`}
         </span>
         <button
@@ -705,7 +902,7 @@ function ClarificationForm({
           disabled={disabled || !allAnswered}
           className="btn btn-primary text-xs disabled:opacity-50"
         >
-          {submitted ? 'Sent' : submitting ? 'Sending…' : 'Send answers'}
+          {submitted ? "Sent" : submitting ? "Sending…" : "Send answers"}
         </button>
       </div>
     </div>
@@ -744,7 +941,9 @@ function ClarificationFormRow({
         {clarification.question}
       </div>
       {clarification.context && (
-        <div className="text-[10px] text-text-faint italic mb-2">{clarification.context}</div>
+        <div className="text-[10px] text-text-faint italic mb-2">
+          {clarification.context}
+        </div>
       )}
       {hasOptions && (
         <div className="flex flex-col gap-1 mb-1.5">
@@ -765,7 +964,9 @@ function ClarificationFormRow({
         value={answer}
         onChange={handleInputChange}
         disabled={disabled}
-        placeholder={hasOptions ? 'or type a custom answer' : 'type your answer'}
+        placeholder={
+          hasOptions ? "or type a custom answer" : "type your answer"
+        }
         className="w-full bg-bg-sunken border border-border rounded px-2 py-1.5 text-xs text-text focus:outline-none focus:border-accent disabled:opacity-50"
       />
     </div>
@@ -796,11 +997,11 @@ function ClarificationOptionChip({
       onClick={handleClick}
       disabled={disabled}
       className={cn(
-        'flex items-center gap-2 w-full text-left px-2.5 py-1.5 rounded border text-xs transition-colors',
+        "flex items-center gap-2 w-full text-left px-2.5 py-1.5 rounded border text-xs transition-colors",
         selected
-          ? 'border-accent bg-accent/15 text-text'
-          : 'border-border/60 bg-bg-sunken/50 text-text-muted hover:bg-accent/10 hover:border-accent/40 hover:text-text',
-        disabled && 'opacity-50 cursor-not-allowed',
+          ? "border-accent bg-accent/15 text-text"
+          : "border-border/60 bg-bg-sunken/50 text-text-muted hover:bg-accent/10 hover:border-accent/40 hover:text-text",
+        disabled && "opacity-50 cursor-not-allowed",
       )}
     >
       {option}
@@ -860,10 +1061,10 @@ function OptionButton({
       onClick={handleClick}
       disabled={submitted}
       className={cn(
-        'flex items-center gap-2 w-full text-left px-2.5 py-1.5 rounded border text-xs transition-colors',
-        'border-border/60 bg-bg-sunken/50 hover:bg-accent/10 hover:border-accent/40',
-        'text-text-muted hover:text-text',
-        submitted && 'opacity-50',
+        "flex items-center gap-2 w-full text-left px-2.5 py-1.5 rounded border text-xs transition-colors",
+        "border-border/60 bg-bg-sunken/50 hover:bg-accent/10 hover:border-accent/40",
+        "text-text-muted hover:text-text",
+        submitted && "opacity-50",
       )}
     >
       {label}
@@ -871,8 +1072,9 @@ function OptionButton({
   );
 }
 
-const TOOL_ICON: Record<string, typeof FileCode2> = {
-  fs: FileCode2,
+// ── icon per tool kind ────────────────────────────────────────────────────────
+const TOOL_KIND_ICON: Record<string, React.ElementType> = {
+  fs: FileSearch,
   code: FileCode2,
   runtime: TerminalIcon,
   browser: Globe,
@@ -881,97 +1083,222 @@ const TOOL_ICON: Record<string, typeof FileCode2> = {
   review: Braces,
 };
 
+// ── icon per specific action (overrides kind-level icon) ─────────────────────
+const TOOL_ACTION_ICON: Record<string, React.ElementType> = {
+  "fs:read": FileText,
+  "fs:write": FileCode2,
+  "fs:list": FolderSearch,
+  "fs:glob": FolderSearch,
+  "fs:delete": X,
+  "code:stream.start": Code2,
+  "code:stream.end": Code2,
+  "runtime:start": Play,
+  "runtime:stop": X,
+  "runtime:restart": Play,
+  "runtime:logs": TerminalIcon,
+  "runtime:port-ready": Zap,
+  "browser:goto": Globe,
+  "browser:click": MousePointerClick,
+  "browser:evaluate": Code2,
+  "browser:check": CheckCircle2,
+  "browser:uncheck": X,
+  "db:query": Database,
+  "agent:generate.start": Sparkles,
+  "agent:generate.end": CheckCircle2,
+  "agent:generate.error": TriangleAlert,
+  "agent:create_task": ClipboardList,
+};
+
+// ── human-readable label per action ──────────────────────────────────────────
 const TOOL_VERB: Record<string, string> = {
-  'fs:read': 'reads',
-  'fs:write': 'writes',
-  'fs:list': 'lists',
-  'code:stream.start': 'writes',
-  'code:stream.end': 'wrote',
-  'runtime:start': 'boots',
-  'runtime:stop': 'stops',
-  'runtime:port-ready': 'serving at',
-  'browser:goto': 'opens',
-  'browser:click': 'clicks',
-  'browser:fill': 'fills',
-  'browser:screenshot': 'snaps',
-  'browser:screenshot.done': 'snapped',
-  'browser:text': 'reads',
-  'db:query': 'queries',
-  'agent:generate.start': 'thinking about',
-  'agent:generate.end': 'done thinking',
-  'agent:generate.error': 'failed',
+  "fs:read": "read",
+  "fs:write": "write",
+  "fs:list": "list",
+  "fs:glob": "glob",
+  "fs:delete": "delete",
+  "code:stream.start": "stream write",
+  "code:stream.end": "stream wrote",
+  "runtime:start": "boot",
+  "runtime:stop": "stop",
+  "runtime:restart": "restart",
+  "runtime:logs": "read logs",
+  "runtime:port-ready": "ready at",
+  "runtime:status": "status",
+  "browser:goto": "navigate",
+  "browser:click": "click",
+  "browser:fill": "fill",
+  "browser:select": "select",
+  "browser:press": "press",
+  "browser:screenshot": "screenshot",
+  "browser:screenshot.done": "screenshot saved",
+  "browser:text": "read text",
+  "browser:get_url": "get URL",
+  "browser:wait_for_selector": "wait for",
+  "browser:evaluate": "evaluate JS",
+  "browser:html": "read DOM",
+  "browser:check": "check",
+  "browser:uncheck": "uncheck",
+  "browser:report_incident": "report incident",
+  "db:query": "query",
+  "db:query.done": "queried",
+  "agent:generate.start": "thinking",
+  "agent:generate.end": "done",
+  "agent:generate.error": "failed",
+  "agent:generate.empty": "empty output",
+  "agent:generate.transient": "transient error",
+  "agent:create_task": "delegate task",
+};
+
+// ── colour accent per tool kind ───────────────────────────────────────────────
+const TOOL_KIND_ACCENT: Record<string, string> = {
+  fs: "#22d3ee", // cyan
+  code: "#6366f1", // indigo
+  runtime: "#10b981", // emerald
+  browser: "#f59e0b", // amber
+  db: "#a855f7", // purple
+  agent: "#f97316", // orange
+  review: "#8b5cf6", // violet
 };
 
 function toolVerb(toolKind: string, action: string): string {
-  return TOOL_VERB[`${toolKind}:${action}`] ?? action;
+  return TOOL_VERB[`${toolKind}:${action}`] ?? action.replace(/[._]/g, " ");
 }
 
 function isErrorAction(action: string): boolean {
-  return action.endsWith('.error');
+  return action.endsWith(".error") || action.endsWith(".empty");
+}
+
+function isDoneAction(action: string): boolean {
+  return (
+    action.endsWith(".done") ||
+    action.endsWith(".end") ||
+    action === "port-ready" ||
+    action.endsWith(".error") // errors are also terminal
+  );
 }
 
 function ToolRow({
   item,
   onOpenFile,
 }: {
-  item: Extract<ActivityItem, { kind: 'tool' }>;
+  item: Extract<ActivityItem, { kind: "tool" }>;
   onOpenFile: (path: string) => void;
 }) {
-  const Icon = TOOL_ICON[item.toolKind] ?? PlayCircle;
-  const color = isRole(item.role ?? '') ? ROLE_COLOR[item.role as Role] : '#64748b';
+  const actionKey = `${item.toolKind}:${item.action}`;
+  const Icon =
+    TOOL_ACTION_ICON[actionKey] ?? TOOL_KIND_ICON[item.toolKind] ?? Wrench;
+  const accent = TOOL_KIND_ACCENT[item.toolKind] ?? "#64748b";
+  const roleColor = isRole(item.role ?? "")
+    ? ROLE_COLOR[item.role as Role]
+    : "#64748b";
+  const roleLabel = isRole(item.role ?? "")
+    ? ROLE_LABEL[item.role as Role]
+    : (item.role ?? "agent");
   const verb = toolVerb(item.toolKind, item.action);
   const failed = item.ok === false || isErrorAction(item.action);
+  const done = isDoneAction(item.action);
 
   const handleOpen = useCallback(() => {
     if (item.path) onOpenFile(item.path);
   }, [item.path, onOpenFile]);
 
   return (
-    <div className="flex items-start gap-2 text-[11px] px-1 py-0.5">
-      <span
-        className={cn(
-          'mt-0.5 rounded p-0.5 shrink-0',
-          failed ? 'bg-red-500/15 text-red-300' : 'bg-bg-sunken/70 text-text-muted',
-        )}
+    <div
+      className={cn(
+        "my-1 rounded border text-[11px] overflow-hidden",
+        failed
+          ? "border-red-500/40 bg-red-500/5"
+          : "border-border/70 bg-bg-sunken/60",
+      )}
+    >
+      {/* header bar */}
+      <div
+        className="flex items-center gap-1.5 px-2 py-1 border-b border-border/40"
+        style={{ borderLeftColor: accent, borderLeftWidth: 2 }}
       >
-        <Icon size={12} />
-      </span>
-      <div className="min-w-0 flex-1 leading-snug">
-        <div className="flex items-center gap-1 flex-wrap">
-          <span
-            className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-            style={{ backgroundColor: color }}
-          />
-          <span className="text-text-faint uppercase tracking-wider text-[9px]">{item.toolKind}</span>
-          <span className="text-text">{verb}</span>
-          {item.path && (
-            <button
-              type="button"
-              onClick={handleOpen}
-              className="font-mono text-accent underline decoration-dotted underline-offset-2 hover:text-accent/80"
-            >
-              {item.path}
-            </button>
-          )}
-          {item.url && <span className="font-mono text-text">{item.url}</span>}
-          {item.ms !== undefined && <span className="text-text-faint">· {item.ms}ms</span>}
-          {failed && <AlertCircle size={11} className="text-red-400" />}
-          {item.ok === true && !failed && item.action.endsWith('.done') && (
-            <CheckCircle2 size={11} className="text-emerald-400" />
-          )}
-        </div>
-        {item.summary && (
-          <div
-            className={cn(
-              'mt-0.5 text-text-faint',
-              failed && 'text-red-300 font-medium whitespace-pre-wrap',
-              (item.path || item.url) && !failed && 'truncate',
-            )}
+        {/* TOOL CALL badge */}
+        <span className="flex items-center gap-0.5 shrink-0 rounded px-1 py-px bg-bg-sunken border border-border/80 text-[9px] font-semibold uppercase tracking-widest text-text-faint">
+          <Wrench size={8} />
+          tool
+        </span>
+        {/* tool kind icon + accent chip */}
+        <span
+          className="flex items-center justify-center rounded p-0.5 shrink-0"
+          style={{ color: accent, backgroundColor: `${accent}18` }}
+        >
+          <Icon size={11} />
+        </span>
+        {/* kind label */}
+        <span
+          className="font-mono text-[9px] uppercase tracking-widest font-semibold"
+          style={{ color: accent }}
+        >
+          {item.toolKind}
+        </span>
+        {/* verb */}
+        <span className="text-text font-medium">{verb}</span>
+        {/* path / url */}
+        {item.path && (
+          <button
+            type="button"
+            onClick={handleOpen}
+            className="ml-0.5 font-mono text-[10px] text-accent underline decoration-dotted underline-offset-2 hover:text-accent/80 truncate max-w-[160px]"
+            title={item.path}
           >
-            {item.summary}
-          </div>
+            {item.path}
+          </button>
+        )}
+        {item.url && (
+          <span
+            className="ml-0.5 font-mono text-[10px] text-text-muted truncate max-w-[160px]"
+            title={item.url}
+          >
+            {item.url}
+          </span>
+        )}
+        {/* spacer */}
+        <span className="flex-1" />
+        {/* ms timing */}
+        {item.ms !== undefined && (
+          <span className="flex items-center gap-0.5 text-text-faint text-[9px]">
+            <Clock size={9} />
+            {item.ms}ms
+          </span>
+        )}
+        {/* role dot */}
+        <span
+          className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+          style={{ backgroundColor: roleColor }}
+          title={roleLabel}
+        />
+        {/* status icon */}
+        {failed && (
+          <TriangleAlert size={11} className="text-red-400 shrink-0" />
+        )}
+        {!failed && done && (
+          <CheckCircle2 size={11} className="text-emerald-400 shrink-0" />
+        )}
+        {!failed && !done && (
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full animate-pulse shrink-0"
+            style={{ backgroundColor: accent }}
+          />
         )}
       </div>
+      {/* optional summary row */}
+      {item.summary && (
+        <div
+          className={cn(
+            "px-2 py-0.5 font-mono text-[10px] leading-relaxed",
+            failed
+              ? "text-red-300 whitespace-pre-wrap"
+              : "text-text-faint truncate",
+          )}
+          title={!failed ? item.summary : undefined}
+        >
+          {item.summary}
+        </div>
+      )}
     </div>
   );
 }
@@ -980,17 +1307,28 @@ function InlineEvent({
   item,
   onOpenFile,
 }: {
-  item: Extract<ActivityItem, { kind: 'log' | 'state' | 'workspace' | 'task' }>;
+  item: Extract<ActivityItem, { kind: "log" | "state" | "workspace" | "task" }>;
   onOpenFile: (path: string) => void;
 }) {
-  const roleLabel = item.kind !== 'task' && isRole(item.role ?? '') ? ROLE_LABEL[item.role as Role] : null;
-  const color = item.kind !== 'task' && isRole(item.role ?? '') ? ROLE_COLOR[item.role as Role] : '#64748b';
+  const roleLabel =
+    item.kind !== "task" && isRole(item.role ?? "")
+      ? ROLE_LABEL[item.role as Role]
+      : null;
+  const color =
+    item.kind !== "task" && isRole(item.role ?? "")
+      ? ROLE_COLOR[item.role as Role]
+      : "#64748b";
 
   return (
     <div className="flex items-start gap-2 text-[11px] px-1">
-      <span className="mt-1 inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+      <span
+        className="mt-1 inline-block w-1.5 h-1.5 rounded-full shrink-0"
+        style={{ backgroundColor: color }}
+      />
       <div className="min-w-0 flex-1">
-        {roleLabel && <span className="text-text-faint mr-1">[{roleLabel}]</span>}
+        {roleLabel && (
+          <span className="text-text-faint mr-1">[{roleLabel}]</span>
+        )}
         <InlineEventBody item={item} onOpenFile={onOpenFile} />
       </div>
     </div>
@@ -1001,26 +1339,33 @@ function InlineEventBody({
   item,
   onOpenFile,
 }: {
-  item: Extract<ActivityItem, { kind: 'log' | 'state' | 'workspace' | 'task' }>;
+  item: Extract<ActivityItem, { kind: "log" | "state" | "workspace" | "task" }>;
   onOpenFile: (path: string) => void;
 }) {
-  if (item.kind === 'log') {
+  if (item.kind === "log") {
     return (
-      <span className={cn('font-mono', item.stream === 'stderr' ? 'text-red-300' : 'text-text')}>
+      <span
+        className={cn(
+          "font-mono",
+          item.stream === "stderr" ? "text-red-300" : "text-text",
+        )}
+      >
         {item.text.trimEnd()}
       </span>
     );
   }
-  if (item.kind === 'state') {
+  if (item.kind === "state") {
     return (
       <span className="text-text">
         <span className="text-text-muted">state: </span>
         {item.status}
-        {item.note ? <span className="text-text-faint"> · {item.note}</span> : null}
+        {item.note ? (
+          <span className="text-text-faint"> · {item.note}</span>
+        ) : null}
       </span>
     );
   }
-  if (item.kind === 'workspace') {
+  if (item.kind === "workspace") {
     return <WorkspaceLink path={item.path} onOpenFile={onOpenFile} />;
   }
   return <span className="text-text">status → {item.status}</span>;
@@ -1053,6 +1398,178 @@ function WorkingIndicator({ hint }: { hint: string }) {
     <div className="flex items-center gap-2 px-1 py-1 text-[11px] text-text-muted">
       <WorkingDots />
       <span className="italic">{hint}</span>
+    </div>
+  );
+}
+
+// ── ThinkingSession ───────────────────────────────────────────────────────────
+// Wraps one agent LLM turn in a collapsible card. Live sessions are always
+// expanded. Completed sessions default to expanded but can be collapsed.
+
+function ThinkingSession({
+  group,
+  pendingQuestionId,
+  questionRef,
+  onOpenFile,
+  onOptionClick,
+}: {
+  group: AgentSession;
+  pendingQuestionId: string | null;
+  questionRef: React.RefObject<HTMLDivElement | null>;
+  onOpenFile: (path: string) => void;
+  onOptionClick: (option: string) => Promise<void>;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  // count meaningful items (exclude the bookend generate.start / generate.end)
+  const innerItems = group.items.filter(
+    (item) =>
+      !(
+        item.kind === "tool" &&
+        item.toolKind === "agent" &&
+        (item.action === "generate.start" ||
+          item.action === "generate.end" ||
+          item.action === "generate.error")
+      ),
+  );
+
+  const toolCallCount = innerItems.filter((i) => i.kind === "tool").length;
+  const roleColor = isRole(group.role ?? "")
+    ? ROLE_COLOR[group.role as Role]
+    : "#f97316";
+  const roleLabel = isRole(group.role ?? "")
+    ? ROLE_LABEL[group.role as Role]
+    : (group.role ?? "agent");
+
+  // live sessions stay open; only completed sessions can be toggled
+  const isOpen = group.live || !collapsed;
+
+  const handleToggle = useCallback(() => {
+    if (!group.live) setCollapsed((c) => !c);
+  }, [group.live]);
+
+  return (
+    <div
+      className={cn(
+        "rounded-md border overflow-hidden",
+        group.failed
+          ? "border-red-500/40"
+          : group.live
+            ? "border-accent/40 attention-glow"
+            : "border-border/60",
+      )}
+    >
+      {/* ── session header ── */}
+      <button
+        type="button"
+        onClick={handleToggle}
+        disabled={group.live}
+        className={cn(
+          "w-full flex items-center gap-2 px-2 py-1.5 text-[11px] select-none",
+          "border-b border-border/40",
+          group.live
+            ? "bg-accent/8 cursor-default"
+            : "bg-bg-sunken/80 hover:bg-bg-sunken cursor-pointer",
+        )}
+      >
+        {/* chevron */}
+        <span className="text-text-faint shrink-0">
+          {group.live ? (
+            <WorkingDots />
+          ) : isOpen ? (
+            <ChevronDown size={12} />
+          ) : (
+            <ChevronRight size={12} />
+          )}
+        </span>
+
+        {/* role dot + label */}
+        <span
+          className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+          style={{ backgroundColor: roleColor }}
+        />
+        <span className="font-medium text-text-muted">{roleLabel}</span>
+
+        {/* turn index */}
+        <span className="font-mono text-[9px] text-text-faint uppercase tracking-wider">
+          turn {group.sessionIndex + 1}
+        </span>
+
+        <span className="flex-1" />
+
+        {/* tool call count */}
+        {toolCallCount > 0 && (
+          <span className="flex items-center gap-1 text-[9px] text-text-faint">
+            <Wrench size={9} />
+            {toolCallCount}
+          </span>
+        )}
+
+        {/* duration */}
+        {group.durationMs !== undefined && (
+          <span className="flex items-center gap-0.5 text-[9px] text-text-faint">
+            <Clock size={9} />
+            {group.durationMs < 1000
+              ? `${group.durationMs}ms`
+              : `${(group.durationMs / 1000).toFixed(1)}s`}
+          </span>
+        )}
+
+        {/* live badge */}
+        {group.live && (
+          <span className="text-[9px] font-semibold text-accent uppercase tracking-widest">
+            live
+          </span>
+        )}
+
+        {/* done / failed badge */}
+        {!group.live && (
+          <span
+            className={cn(
+              "text-[9px] uppercase tracking-widest font-semibold",
+              group.failed ? "text-red-400" : "text-emerald-400",
+            )}
+          >
+            {group.failed ? "failed" : "done"}
+          </span>
+        )}
+      </button>
+
+      {/* ── session body ── */}
+      {isOpen && (
+        <div className="px-2 py-1.5 space-y-1.5 bg-bg-raised/40">
+          {innerItems.map((item) => {
+            const isActiveQuestion =
+              item.kind === "chat" &&
+              item.direction === "to-human" &&
+              pendingQuestionId === item.id;
+            return (
+              <FeedRow
+                key={item.id}
+                item={item}
+                onOpenFile={onOpenFile}
+                onOptionClick={onOptionClick}
+                highlightRef={isActiveQuestion ? questionRef : undefined}
+                isActiveQuestion={isActiveQuestion}
+              />
+            );
+          })}
+          {innerItems.length === 0 && group.live && (
+            <div className="text-[11px] text-text-faint italic py-0.5">
+              waiting for output…
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── collapsed summary ── */}
+      {!isOpen && innerItems.length > 0 && (
+        <div className="px-2 py-1 text-[10px] text-text-faint italic bg-bg-raised/20">
+          {toolCallCount > 0
+            ? `${toolCallCount} tool call${toolCallCount !== 1 ? "s" : ""} · click to expand`
+            : "click to expand"}
+        </div>
+      )}
     </div>
   );
 }

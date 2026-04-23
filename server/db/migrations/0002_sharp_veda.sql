@@ -1,0 +1,1 @@
+ALTER TABLE "olympus_tasks" ADD COLUMN "error_log" jsonb DEFAULT '[]'::jsonb;
